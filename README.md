@@ -34,6 +34,24 @@ kipp event "Task completed: built auth API. Alice reviewed."
 kipp extract --all
 ```
 
+## Upgrading from entity-memory
+
+The pip distribution changed name, so pipx sees a new app. Swap them, or
+`memory` keeps pointing at the old install and fails to import:
+
+```bash
+pipx uninstall entity-memory
+pipx install -e .            # provides `kipp` and the `memory` alias
+```
+
+`scripts/install.sh` does this for you. Existing `entity-memory-*` systemd
+units keep working, because they call `memory`, which is now the alias. To
+move to the new unit names, disable the old timers, remove their files from
+`~/.config/systemd/user/`, then install the `kipp-*` units as described under
+Maintenance.
+
+Qdrant data and collection names are unchanged.
+
 ## Architecture
 
 - **Qdrant** (Docker) — vector database for semantic search
