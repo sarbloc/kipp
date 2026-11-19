@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 from qdrant_client import QdrantClient
@@ -15,6 +17,7 @@ from qdrant_client.models import (
 )
 
 from entity_memory.client import collection_name, point_to_entity
+from entity_memory.merge import fact_score
 from entity_memory.models import Entity
 
 
@@ -47,6 +50,40 @@ def _project_temporal(entity: Entity, as_of: str | None) -> Entity:
     return entity
 
 
+_WORD = re.compile(r"[a-z0-9]+")
+_STOPWORDS = frozenset(
+    "the and for with that this from what when where which who whom whose why how "
+    "are was were has have had his her its our their your you not but any all can "
+    "does did about into over than then them they there these those will would "
+    "should could been being just also".split()
+)
+
+
+# Leading bracket groups are routing/provenance ("[person:x]",
+# "[run_id:... profile:personal-act]"), not content: they must not score.
+_LEAD_BRACKETS = re.compile(r"^\s*(?:\[[^\]]*\]\s*)+")
+
+
+def _terms(text: str) -> set[str]:
+    text = _LEAD_BRACKETS.sub("", text).lower()
+    return {w for w in _WORD.findall(text) if len(w) >= 3 and w not in _STOPWORDS}
+
+
+def _rank_facts(entity: Entity, query: str, now: datetime) -> None:
+    """Order ``entity.facts`` best-first for this query, in place.
+
+    Facts are stored oldest-first, so callers that show the first fact (e.g.
+    Endurance's per-turn injection) surfaced the entity's OLDEST fact rather
+    than the one the query hit. Rank by query-term overlap, then by
+    frequency × recency (``fact_score``). Lexical on purpose: embedding every
+    fact per query costs seconds on CPU. Per-fact vectors will replace this.
+    """
+    q = _terms(query)
+    entity.facts.sort(
+        key=lambda f: (len(q & _terms(f.text)), fact_score(f, now)), reverse=True,
+    )
+
+
 def search_entities(
     client: QdrantClient,
     query: str,
@@ -62,7 +99,8 @@ def search_entities(
     Uses dense vector search as primary, with optional type filter.
     Deduplicates results across collections by entity_id, keeping the higher score.
 
-    Each result's facts are projected to a temporal view: superseded facts are
+    Each result's facts are ordered best-first for the query (``_rank_facts``)
+    and projected to a temporal view: superseded facts are
     hidden by default; pass ``as_of`` (ISO date) to see each entity as it was on
     that date (issue #21). Entities with no facts valid at that date are dropped,
     and the limit is applied AFTER projection so they don't squat the top slots.
@@ -119,10 +157,12 @@ def search_entities(
 
     ranked = sorted(results_map.values(), key=lambda r: r.score, reverse=True)
 
+    now = datetime.utcnow()
     projected: list[SearchResult] = []
     for r in ranked:
         _project_temporal(r.entity, as_of)
         if r.entity.facts:
+            _rank_facts(r.entity, query, now)
             projected.append(r)
         if len(projected) >= limit:
             break
