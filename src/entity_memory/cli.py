@@ -229,13 +229,20 @@ def event(text: str, source: str, agent: str):
 )
 @click.option(
     "--threshold", default=MATCH_THRESHOLD, show_default=True, type=float,
-    help="Cosine gate for a sentence→fact match. Lower = enrich more aggressively.",
+    help="Cosine gate for a sentence→fact match (with --match-untagged only).",
+)
+@click.option(
+    "--match-untagged", is_flag=True,
+    help="Also cosine-match events with no leading [type:id] tag. Off by "
+         "default: it misattributes most facts (issue #33).",
 )
 def extract(
-    since: str | None, process_all: bool, domain: str, batch_size: int, threshold: float
+    since: str | None, process_all: bool, domain: str, batch_size: int,
+    threshold: float, match_untagged: bool,
 ):
     """Process unextracted events into entity upserts.
 
+    Events opening with a [type:id] tag attach to that entity when it exists.
     Events are processed in batches so a large backlog makes visible,
     kill-safe progress. Only events that enriched an existing entity are
     marked extracted; fully-unmatched events stay as new-entity candidates.
@@ -259,6 +266,7 @@ def extract(
     summary = run_extraction(
         client, embedder, domain=domain, since=since_dt,
         batch_size=batch_size, threshold=threshold, progress=_progress,
+        match_untagged=match_untagged,
     )
 
     if summary["events_processed"] == 0:

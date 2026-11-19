@@ -88,7 +88,7 @@ def test_unmatched_event_not_burned(cli_env, embedder):
     # floor near 0.7, so only identical text clears 0.95 (see test_pipeline).
     unmatched_id = _seed_event(client, embedder, "grok quaffle.")
 
-    result = CliRunner().invoke(main, ["extract", "--all", "--threshold", "0.95"])
+    result = CliRunner().invoke(main, ["extract", "--all", "--match-untagged", "--threshold", "0.95"])
     assert result.exit_code == 0, result.output
     assert "Processed 2 events" in result.output
 
@@ -145,10 +145,10 @@ def test_threshold_flag_moves_the_gate(cli_env, embedder):
     _seed_entity(client, embedder, "person:alice", "person", ["Manages the auth team"])
     ev = _seed_event(client, embedder, "grok quaffle.")
 
-    high = CliRunner().invoke(main, ["extract", "--all", "--threshold", "0.9"])
+    high = CliRunner().invoke(main, ["extract", "--all", "--match-untagged", "--threshold", "0.9"])
     assert high.exit_code == 0, high.output
     assert ev in {e["id"] for e in get_unextracted_events(client)}  # gate too high → survives
 
-    low = CliRunner().invoke(main, ["extract", "--all", "--threshold", "0.6"])
+    low = CliRunner().invoke(main, ["extract", "--all", "--match-untagged", "--threshold", "0.6"])
     assert low.exit_code == 0, low.output
     assert ev not in {e["id"] for e in get_unextracted_events(client)}  # gate low → enriched

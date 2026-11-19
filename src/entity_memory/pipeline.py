@@ -1,5 +1,6 @@
 """Extraction pipeline: fetch unextracted events and roll matched sentences
-into existing entities, in batches.
+into existing entities, in batches. Tagged events route by id; untagged ones
+are cosine-matched only with ``match_untagged`` (issue #33).
 
 This is the single orchestration path shared by the ``memory extract`` CLI
 command and the ``memory_extract`` MCP tool. Keeping both callers on one helper
@@ -65,6 +66,7 @@ def run_extraction(
     threshold: float = MATCH_THRESHOLD,
     now: Optional[datetime] = None,
     progress: Optional[ProgressFn] = None,
+    match_untagged: bool = False,
 ) -> dict[str, Any]:
     """Fetch unextracted events in ``domain`` and enrich matched entities.
 
@@ -74,11 +76,14 @@ def run_extraction(
         domain: shared | dev | personal.
         since: only events newer than this (None = whole backlog).
         batch_size: events per batch (>= 1). Each batch commits before the next.
-        threshold: cosine gate for a sentence→entity match.
+        threshold: cosine gate for a sentence→entity match (untagged only).
         now: clock override (fact timestamps).
         progress: optional callback invoked once per batch with a dict of
             {batch, total_batches, events_in_batch, matched_in_batch,
              cumulative_events, total_events}.
+        match_untagged: also cosine-match events with no ``[type:id]`` tag.
+            Off by default (issue #33): tagged events route by id, untagged
+            ones stay unextracted for the LLM agent.
 
     Returns a summary dict: events_processed, matched, unmatched,
     matched_events, unmatched_samples. ``matched``/``unmatched`` are sentence
@@ -95,9 +100,10 @@ def run_extraction(
     now = now or datetime.utcnow()
     today = now.date().isoformat()
 
-    # Embed the entity corpus ONCE for the whole run (see module docstring).
+    # Embed the entity corpus ONCE for the whole run (see module docstring) —
+    # and only when untagged cosine matching is on; tag routing needs ids only.
     entities = scroll_entities(client, domain=domain)
-    index = build_entity_index(entities, embedder)
+    index = build_entity_index(entities, embedder, embed_facts=match_untagged)
 
     total_events = 0
     total_matched = 0
@@ -109,7 +115,8 @@ def run_extraction(
     for batch_no, start in enumerate(range(0, len(events), batch_size), start=1):
         batch = events[start : start + batch_size]
         result = extract_events_with_index(
-            batch, index, embedder, now=now, threshold=threshold
+            batch, index, embedder, now=now, threshold=threshold,
+            match_untagged=match_untagged,
         )
 
         # Enrich matched entities. merge() mutates the (shared) entity object in

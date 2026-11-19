@@ -7,6 +7,7 @@ from entity_memory.extract import (
     extract_events,
     extract_events_with_index,
     match_sentence_to_entity,
+    parse_lead_tag,
     split_sentences,
 )
 from entity_memory.models import Entity, Fact
@@ -132,7 +133,7 @@ class TestExtractEvents:
         # deterministically (identical text → cosine 1.0 with MockEmbedder).
         matching_sentence = build_search_text(entity)
         events = [{"id": "e1", "text": matching_sentence}]
-        result = extract_events(events, [entity], embedder, now=NOW)
+        result = extract_events(events, [entity], embedder, now=NOW, match_untagged=True)
         assert "e1" in result.matched_event_ids
         assert len(result.matched) >= 1
 
@@ -151,7 +152,9 @@ class TestExtractEvents:
             {"id": "match", "text": st},
             {"id": "nomatch", "text": "grok quaffle."},
         ]
-        result = extract_events(events, [entity], embedder, now=NOW, threshold=0.95)
+        result = extract_events(
+            events, [entity], embedder, now=NOW, threshold=0.95, match_untagged=True,
+        )
         assert "match" in result.matched_event_ids
         assert "nomatch" not in result.matched_event_ids
 
@@ -181,7 +184,7 @@ class TestEmbedsCorpusOnce:
         total_sentences = 4
         counter = _CountingEmbedder(embedder)
 
-        extract_events(events, entities, counter, now=NOW)
+        extract_events(events, entities, counter, now=NOW, match_untagged=True)
 
         # 4 fact embeds + 4 sentence embeds. Multiplicative path: 4*4 + 4;
         # per-entity (pre-#17) would be 3 + 4. Per-fact is 4 + 4.
@@ -197,7 +200,85 @@ class TestEmbedsCorpusOnce:
 
         events = [{"id": "e1", "text": "One sentence. Two sentence. Three sentence."}]
         counter = _CountingEmbedder(embedder)
-        extract_events_with_index(events, index, counter, now=NOW)
+        extract_events_with_index(events, index, counter, now=NOW, match_untagged=True)
 
         # Index is prebuilt → only the 3 sentences are embedded.
         assert counter.calls == 3
+
+
+# ── tag routing (issue #33) ──────────────────────────────
+
+class TestParseLeadTag:
+    def test_plain_tag(self):
+        assert parse_lead_tag("[person:alice] Runs auth. Likes tea.") == (
+            "person:alice", "Runs auth. Likes tea.",
+        )
+
+    def test_first_entity_tag_among_leading_groups(self):
+        tag, body = parse_lead_tag("[preference][project:orbs-web] Review PRs carefully.")
+        assert tag == "project:orbs-web"
+        assert body == "Review PRs carefully."
+
+    def test_untagged_text_unchanged(self):
+        assert parse_lead_tag("Alice runs auth.") == (None, "Alice runs auth.")
+
+    def test_non_entity_brackets_are_not_a_tag(self):
+        text = "[widened from:shared] Alice runs auth."
+        assert parse_lead_tag(text) == (None, text)
+
+    def test_mid_text_tag_ignored(self):
+        text = "Alice met [person:bob] today."
+        assert parse_lead_tag(text) == (None, text)
+
+
+class TestTagRouting:
+    def test_tagged_event_routes_every_sentence_to_target(self, embedder):
+        alice = _entity("person:alice", "person", ["Manages the auth team"])
+        hub = _entity("project:hub", "project", ["Alice moved to Berlin. Likes coffee."])
+        events = [{"id": "e1", "text": "[person:alice] Moved to Berlin. Drinks coffee daily."}]
+
+        # Even with cosine on and the gate at zero (everything would match the
+        # hub), the tag wins.
+        result = extract_events(
+            events, [hub, alice], embedder, now=NOW, threshold=-1.0, match_untagged=True,
+        )
+
+        assert [(s, e.id) for s, e in result.matched] == [
+            ("Moved to Berlin.", "person:alice"),
+            ("Drinks coffee daily.", "person:alice"),
+        ]
+        assert result.matched_event_ids == {"e1"}
+
+    def test_tag_for_missing_entity_leaves_event_unmatched(self, embedder):
+        hub = _entity("project:hub", "project", ["Anything at all"])
+        events = [{"id": "e1", "text": "[person:carol] New starter. Works on payments."}]
+
+        result = extract_events(
+            events, [hub], embedder, now=NOW, threshold=-1.0, match_untagged=True,
+        )
+
+        assert result.matched == []
+        assert result.unmatched == ["New starter.", "Works on payments."]
+        assert result.matched_event_ids == set()
+
+    def test_untagged_events_unmatched_by_default(self, embedder):
+        entity = _entity("person:alice", "person", ["Manages the auth team"])
+        events = [{"id": "e1", "text": "Manages the auth team"}]  # identical text
+
+        result = extract_events(events, [entity], embedder, now=NOW)
+
+        assert result.matched == []
+        assert result.unmatched == ["Manages the auth team"]
+
+    def test_default_run_embeds_nothing(self, embedder):
+        """Tag routing needs ids only: no fact or sentence embeds by default."""
+        entities = [_entity("person:alice", "person", ["Fact one", "Fact two"])]
+        events = [
+            {"id": "e1", "text": "[person:alice] Tagged sentence here."},
+            {"id": "e2", "text": "Untagged sentence here."},
+        ]
+        counter = _CountingEmbedder(embedder)
+
+        extract_events(events, entities, counter, now=NOW)
+
+        assert counter.calls == 0

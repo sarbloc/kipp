@@ -42,6 +42,7 @@ memory search "<query>"
 
 - Never store secrets (API keys, tokens, passwords) in memory
 - Prefer `event` for raw observations; let extraction handle entity creation
+- Start event text with its subject tag, e.g. `[person:alice] Moved to Berlin.` — extraction routes tagged events to that entity deterministically; untagged events wait for an agent to file them
 - Use `store` when you're confident about the entity type and key
 - Use `search` before spawning sub-agents to provide relevant context
 
