@@ -22,7 +22,7 @@ from qdrant_client import QdrantClient
 
 from entity_memory.client import upsert_entity
 from entity_memory.extract import parse_lead_tag
-from entity_memory.merge import build_search_text, drop_expired, find_duplicate
+from entity_memory.merge import build_search_text, drop_expired, find_duplicate, longer_lifetime
 from entity_memory.models import Entity, Fact
 
 EXTRACT_SOURCE = "extract"
@@ -141,7 +141,7 @@ def _land(target: Entity, fact: Fact, embedder: EmbedderLike, now: datetime) -> 
         return
     dupe.hit_count += fact.hit_count
     # The merged fact lives as long as the longer-lived copy: permanent wins.
-    dupe.expires = None if None in (dupe.expires, fact.expires) else max(dupe.expires, fact.expires)
+    dupe.expires = longer_lifetime(dupe.expires, fact.expires)
     dupe.last_seen = max(fact.last_seen or fact.added, dupe.last_seen or dupe.added)
     start = min(fact.valid_from or fact.added, dupe.valid_from or dupe.added)
     if start < (dupe.valid_from or dupe.added):

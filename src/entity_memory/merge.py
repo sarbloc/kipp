@@ -79,6 +79,11 @@ def fact_score(fact: Fact, now: datetime) -> float:
 
 # ── Core operations ──────────────────────────────────────
 
+def longer_lifetime(a: str | None, b: str | None) -> str | None:
+    """The later of two ``expires`` dates; ``None`` (permanent) beats any date."""
+    return None if a is None or b is None else max(a, b)
+
+
 def merge(
     entity: Entity,
     new_facts: list[Fact],
@@ -89,7 +94,8 @@ def merge(
 
     For each new fact:
       - If a semantic duplicate exists (cosine >= 0.9):
-          update last_seen and hit_count; replace text if new is longer.
+          update last_seen and hit_count; replace text if new is longer;
+          keep the longer lifetime (permanent wins).
       - Otherwise: append as a new fact.
 
     Expired facts are dropped first.
@@ -136,6 +142,9 @@ def merge(
                 existing_start = dupe.valid_from or dupe.added
                 if new_fact.valid_from < existing_start:
                     dupe.valid_from = new_fact.valid_from
+            # A re-assertion never shortens a fact's life: a permanent copy
+            # makes the merged fact permanent, else the later expiry wins (#40).
+            dupe.expires = longer_lifetime(dupe.expires, new_fact.expires)
             if len(new_fact.text) > len(dupe.text):
                 dupe.text = new_fact.text
                 dupe.embedding = new_fact.embedding
