@@ -1,4 +1,9 @@
-# KIPP
+<h1 align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/kipp-logo-dark.svg">
+    <img src="docs/brand/kipp-logo.svg" alt="KIPP" width="360">
+  </picture>
+</h1>
 
 Memory for AI agents that keeps one current record per thing, not an
 ever-growing log. Local, deterministic, no LLM in the loop.
