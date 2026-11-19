@@ -3,7 +3,14 @@ set -e
 
 echo "Installing KIPP..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-pipx install -e "$SCRIPT_DIR/.."
+# Pre-rename installs are a separate pipx app ("entity-memory") that owns the
+# `memory` symlink and imports the removed entity_memory package. Remove it so
+# kipp-memory can take over `memory` as an alias.
+if pipx list --short 2>/dev/null | grep -q '^entity-memory '; then
+    echo "Removing pre-rename entity-memory install..."
+    pipx uninstall entity-memory
+fi
+pipx install --force -e "$SCRIPT_DIR/.."
 
 echo "Pulling Qdrant Docker image..."
 docker pull qdrant/qdrant:latest
