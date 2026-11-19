@@ -37,11 +37,14 @@ from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
-from qdrant_client.models import PointStruct
+import warnings
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import PointStruct, SnapshotPriority
 
 from entity_memory.client import (
     collection_name,
+    ensure_collections,
     get_client,
     point_to_entity,
     scroll_entities,
@@ -51,6 +54,7 @@ from entity_memory.embedder import Embedder
 from entity_memory.extract import parse_lead_tag
 from entity_memory.merge import build_search_text
 from entity_memory.models import Entity, Fact
+from entity_memory.repair import apply_repair, plan_repair
 
 DOMAINS = ("shared", "dev", "personal")
 KINDS = ("entities", "decisions")
@@ -59,9 +63,12 @@ NS = uuid.UUID("8a6f3c1e-2b1d-4c55-9a0e-6f1f7a0d4e21")
 TMP_PREFIX = "tmp_requeue_"
 
 
-def load_snapshot_entities(url: str, snap_dir: Path, domain: str) -> list[Entity]:
-    """Restore the domain's entity snapshots into temp collections and read them."""
-    client = get_client()
+def load_snapshot_entities(client, snap_dir: Path, domain: str) -> list[Entity]:
+    """Restore the domain's entity snapshots into temp collections and read them.
+
+    Uploads go through ``client`` so they hit the same server with the same
+    credentials as every other read and write here.
+    """
     entities: list[Entity] = []
     for kind in KINDS:
         coll = collection_name(domain, kind)
@@ -69,14 +76,11 @@ def load_snapshot_entities(url: str, snap_dir: Path, domain: str) -> list[Entity
         if not snap.exists():
             sys.exit(f"missing snapshot: {snap}")
         tmp = TMP_PREFIX + coll
-        with snap.open("rb") as fh:
-            r = httpx.post(
-                f"{url}/collections/{tmp}/snapshots/upload",
-                params={"priority": "snapshot", "wait": "true"},
-                files={"snapshot": fh}, timeout=600,
-            )
-        r.raise_for_status()
         try:
+            with snap.open("rb") as fh:
+                client.http.snapshots_api.recover_from_uploaded_snapshot(
+                    tmp, wait=True, priority=SnapshotPriority.SNAPSHOT, snapshot=fh,
+                )
             offset = None
             while True:
                 pts, offset = client.scroll(tmp, limit=200, offset=offset, with_payload=True)
@@ -84,8 +88,32 @@ def load_snapshot_entities(url: str, snap_dir: Path, domain: str) -> list[Entity
                 if offset is None:
                     break
         finally:
-            client.delete_collection(tmp)
+            if client.collection_exists(tmp):
+                client.delete_collection(tmp)
     return entities
+
+
+def repair_absorbers(entities: list[Entity], embedder, now: datetime) -> set[tuple[str, str, str]]:
+    """Keys of pre-repair facts that a repair move deduplicated into.
+
+    Replays ``apply_repair`` on the snapshot entities against a throwaway
+    in-memory store: a fact whose hit_count grew absorbed a tag-verified move,
+    so it is verified too and must not be requeued.
+    """
+    before = {id(f): (e.id, f.text, f.added, f.hit_count) for e in entities for f in e.facts}
+    scratch = QdrantClient(":memory:")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ensure_collections(scratch)
+    by_id = {e.id: e for e in entities}
+    plan = plan_repair(entities)
+    apply_repair(scratch, embedder, "shared", entities, plan, now)
+    absorbed = set()
+    for tid in {m.target_id for m in plan.moves}:
+        for f in by_id[tid].facts:
+            if id(f) in before and f.hit_count > before[id(f)][3]:
+                absorbed.add(before[id(f)][:3])
+    return absorbed
 
 
 def legacy_keys(entities: list[Entity]) -> set[tuple[str, str, str]]:
@@ -132,15 +160,17 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("snapshot_dir", type=Path, help="PRE-repair snapshot directory")
     ap.add_argument("--apply", action="store_true")
-    ap.add_argument("--qdrant-url", default="http://localhost:6333")
     args = ap.parse_args()
 
     client = get_client()
-    embedder = Embedder() if args.apply else None
+    embedder = Embedder()  # repair replay must dedup exactly as the real run did
     now = datetime.utcnow()
 
     for domain in DOMAINS:
-        pre = legacy_keys(load_snapshot_entities(args.qdrant_url, args.snapshot_dir, domain))
+        snapshot = load_snapshot_entities(client, args.snapshot_dir, domain)
+        pre = legacy_keys(snapshot)  # before the replay mutates the snapshot
+        absorbed = repair_absorbers(snapshot, embedder, now)
+        pre -= absorbed
         live = scroll_entities(client, domain=domain)
         plan = [(e, [f for f in e.facts if is_legacy(e, f, pre)]) for e in live]
         plan = [(e, out) for e, out in plan if out]
@@ -149,7 +179,7 @@ def main() -> None:
         emptied = [e.id for e, out in plan if len(out) == len(e.facts)]
         print(f"[{domain}] {total - bare} facts to requeue, {bare} bare tags to drop, "
               f"from {len(plan)} entities ({len(emptied)} left with no facts); "
-              f"legacy set {len(pre)}.")
+              f"legacy set {len(pre)}, {len(absorbed)} repair-verified.")
         for e, out in sorted(plan, key=lambda p: -len(p[1]))[:8]:
             print(f"  {len(out):5d}  {e.id}  ({len(e.facts) - len(out)} kept)")
         for eid in emptied:
