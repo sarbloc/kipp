@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily entity-memory Qdrant backup
+Documentation=https://github.com/sarbloc/memory-system-skill
+
+[Timer]
+# After the 03:30 expiry, so backups hold the pruned state.
+OnCalendar=*-*-* 04:45:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target

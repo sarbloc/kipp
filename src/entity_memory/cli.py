@@ -2,11 +2,14 @@
 
 import uuid
 from collections import Counter
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import click
+import httpx
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
+from entity_memory.backup import DEFAULT_KEEP, backup_all
 from entity_memory.client import (
     DOMAINS,
     collection_name,
@@ -15,6 +18,7 @@ from entity_memory.client import (
     ensure_collections,
     get_client,
     get_entity,
+    qdrant_connection,
     scroll_entities,
     store_event,
     upsert_entity,
@@ -506,6 +510,25 @@ def mcp():
     from entity_memory.mcp_server import run
 
     run()
+
+
+@main.command(name="backup")
+@click.option(
+    "--dest", type=click.Path(file_okay=False, path_type=Path),
+    default=Path.home() / "backups" / "qdrant", show_default=True,
+    help="Directory holding one subdirectory per backup",
+)
+@click.option("--keep", default=DEFAULT_KEEP, show_default=True, help="Complete backups to retain")
+def backup_cmd(dest: Path, keep: int):
+    """Snapshot every Qdrant collection to DEST/<stamp>/ (verified, pruned)."""
+    url, api_key = qdrant_connection()
+    headers = {"api-key": api_key} if api_key else {}
+    with httpx.Client(base_url=url, headers=headers, timeout=600) as http:
+        result = backup_all(get_client(), http, dest, datetime.now(timezone.utc), keep=keep)
+    for name, entry in result.collections.items():
+        click.echo(f"  {name:20s} {entry['points']:6d} points  {entry['bytes'] / 1e6:7.1f} MB")
+    click.echo(f"Backed up {len(result.collections)} collections to {result.path}"
+               f" ({len(result.pruned)} old backups pruned).")
 
 
 if __name__ == "__main__":

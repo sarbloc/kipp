@@ -76,6 +76,34 @@ systemctl --user enable --now entity-memory-expire.timer
 Put any Qdrant env vars (`QDRANT_URL`, `QDRANT_API_KEY`) in
 `~/.config/entity-memory/env`.
 
+### Backup and restore
+
+`memory backup` takes a native Qdrant snapshot of every collection (all
+domains), downloads it to `~/backups/qdrant/<UTC stamp>/`, checks each file
+against the sha256 Qdrant reports, writes a `manifest.json` of point counts
+and digests, and deletes the server-side copy. Only the newest 14 backups are
+kept (`--keep`, `--dest` to change). A run that fails leaves nothing behind
+under a stamp name, so every stamp directory is a complete backup.
+
+Same disk as the data: this covers a bad migration or an accidental delete,
+not drive failure. Copy the directory elsewhere if you need that.
+
+Install the daily timer (04:45, after expiry) the same way:
+
+```bash
+cp contrib/systemd/entity-memory-backup.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now entity-memory-backup.timer
+```
+
+Restore one collection (replaces its contents):
+
+```bash
+curl -X POST "http://127.0.0.1:6333/collections/<name>/snapshots/upload?priority=snapshot" \
+     -H "api-key: $QDRANT_API_KEY" \
+     -F snapshot=@$HOME/backups/qdrant/<stamp>/<name>.snapshot
+```
+
 ## OpenClaw skill
 
 Install as a skill:

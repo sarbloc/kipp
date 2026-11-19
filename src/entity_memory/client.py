@@ -136,13 +136,18 @@ def load_config() -> dict:
     return config
 
 
-def get_client(config: dict | None = None) -> QdrantClient:
-    """Create a QdrantClient from config."""
+def qdrant_connection(config: dict | None = None) -> tuple[str, str | None]:
+    """Resolve the Qdrant (url, api_key) every client in this package uses."""
     config = config or load_config()
     qdrant_cfg = config.get("qdrant", {})
     url = qdrant_cfg.get("url", "http://127.0.0.1:6333")
     api_key_env = qdrant_cfg.get("api_key_env", "QDRANT_API_KEY")
-    api_key = os.environ.get(api_key_env)
+    return url, os.environ.get(api_key_env)
+
+
+def get_client(config: dict | None = None) -> QdrantClient:
+    """Create a QdrantClient from config."""
+    url, api_key = qdrant_connection(config)
     return QdrantClient(url=url, api_key=api_key)
 
 
