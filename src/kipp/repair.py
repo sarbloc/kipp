@@ -20,10 +20,10 @@ from typing import Protocol
 
 from qdrant_client import QdrantClient
 
-from entity_memory.client import upsert_entity
-from entity_memory.extract import parse_lead_tag
-from entity_memory.merge import build_search_text, drop_expired, find_duplicate, longer_lifetime
-from entity_memory.models import Entity, Fact
+from kipp.client import upsert_entity
+from kipp.extract import parse_lead_tag
+from kipp.merge import build_search_text, drop_expired, find_duplicate, longer_lifetime
+from kipp.models import Entity, Fact
 
 EXTRACT_SOURCE = "extract"
 

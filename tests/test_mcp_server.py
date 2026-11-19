@@ -21,10 +21,10 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from entity_memory import mcp_server
-from entity_memory.client import ALL_COLLECTIONS, store_event, upsert_entity
-from entity_memory.merge import build_search_text
-from entity_memory.models import Entity, Fact
+from kipp import mcp_server
+from kipp.client import ALL_COLLECTIONS, store_event, upsert_entity
+from kipp.merge import build_search_text
+from kipp.models import Entity, Fact
 
 NOW_ISO = "2026-03-10T12:00:00"
 TODAY = "2026-03-10"

@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pytest
 
-from entity_memory.extract import MATCH_THRESHOLD, build_entity_index
-from entity_memory.models import Entity, Fact
+from kipp.extract import MATCH_THRESHOLD, build_entity_index
+from kipp.models import Entity, Fact
 
 FIXTURE = Path(__file__).parent / "data" / "match_pairs.json"
 
@@ -42,7 +42,7 @@ def _entity_of(pair: dict) -> Entity:
 def real_embedder():
     """The real MiniLM model, or skip the whole module if it can't load."""
     try:
-        from entity_memory.embedder import Embedder
+        from kipp.embedder import Embedder
 
         return Embedder()
     except Exception as exc:  # ImportError, blocked download, missing cache…

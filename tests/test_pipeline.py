@@ -14,15 +14,15 @@ import uuid
 
 import pytest
 
-from entity_memory.client import (
+from kipp.client import (
     ALL_COLLECTIONS,
     get_unextracted_events,
     store_event,
     upsert_entity,
 )
-from entity_memory.merge import build_search_text
-from entity_memory.models import Entity, Fact
-from entity_memory.pipeline import run_extraction
+from kipp.merge import build_search_text
+from kipp.models import Entity, Fact
+from kipp.pipeline import run_extraction
 
 TODAY = "2026-03-10"
 NOW_ISO = "2026-03-10T12:00:00"
@@ -172,7 +172,7 @@ def test_domain_isolation(store, embedder):
 
 def test_tagged_event_enriches_target_without_cosine(store, embedder):
     """Default run: tagged event lands on its entity, tag stripped (#33)."""
-    from entity_memory.client import get_entity
+    from kipp.client import get_entity
 
     _seed_entity(store, embedder, "person:alice", "person", ["Manages the auth team"])
     tagged = _seed_event(store, embedder, "[person:alice] Moved to Berlin in March.")

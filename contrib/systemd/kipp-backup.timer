@@ -1,6 +1,6 @@
 [Unit]
-Description=Daily entity-memory Qdrant backup
-Documentation=https://github.com/sarbloc/memory-system-skill
+Description=Daily KIPP Qdrant backup
+Documentation=https://github.com/sarbloc/kipp
 
 [Timer]
 # After the 03:30 expiry, so backups hold the pruned state.

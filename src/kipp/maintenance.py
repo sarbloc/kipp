@@ -12,8 +12,8 @@ from typing import Protocol
 
 from qdrant_client import QdrantClient
 
-from entity_memory.client import collection_name, scroll_entities, upsert_entity
-from entity_memory.merge import MAX_FACTS, build_search_text, compact, drop_expired
+from kipp.client import collection_name, scroll_entities, upsert_entity
+from kipp.merge import MAX_FACTS, build_search_text, compact, drop_expired
 
 
 class EmbedderLike(Protocol):

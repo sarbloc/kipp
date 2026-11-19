@@ -7,12 +7,12 @@ import pytest
 from click.testing import CliRunner
 from qdrant_client import QdrantClient
 
-import entity_memory.cli as cli_mod
-from entity_memory.client import ensure_collections, get_entity, upsert_entity
-from entity_memory.embedder import MockEmbedder
-from entity_memory.extract import parse_lead_tag
-from entity_memory.models import Entity, Fact
-from entity_memory.repair import apply_repair, plan_repair
+import kipp.cli as cli_mod
+from kipp.client import ensure_collections, get_entity, upsert_entity
+from kipp.embedder import MockEmbedder
+from kipp.extract import parse_lead_tag
+from kipp.models import Entity, Fact
+from kipp.repair import apply_repair, plan_repair
 
 NOW = datetime(2026, 11, 19, 12, 0, 0)
 DIMS = 384
@@ -226,7 +226,7 @@ def test_interrupted_apply_duplicates_but_never_loses(client, emb):
     for e in entities:
         upsert_entity(client, e, emb.embed(e.id), domain="dev")
 
-    import entity_memory.repair as repair_mod
+    import kipp.repair as repair_mod
 
     real, calls = repair_mod.upsert_entity, {"n": 0}
 

@@ -5,10 +5,10 @@ from datetime import datetime
 
 from qdrant_client import QdrantClient
 
-from entity_memory.client import ensure_collections, upsert_entity
-from entity_memory.embedder import MockEmbedder
-from entity_memory.models import Entity, Fact
-from entity_memory.search import _rank_facts, search_entities
+from kipp.client import ensure_collections, upsert_entity
+from kipp.embedder import MockEmbedder
+from kipp.models import Entity, Fact
+from kipp.search import _rank_facts, search_entities
 
 NOW = datetime(2026, 11, 19, 12, 0, 0)
 

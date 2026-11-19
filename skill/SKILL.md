@@ -1,13 +1,13 @@
 ---
-name: entity-memory
+name: kipp
 description: >
   Entity-based persistent memory with semantic search. Store facts about people,
   projects, tools, decisions. Search by meaning. Sub-linear growth over time.
   Use when the agent needs to remember, recall, or log observations.
-metadata: {"openclaw":{"emoji":"🧠","requires":{"bins":["memory","docker"]}}}
+metadata: {"openclaw":{"emoji":"🧠","requires":{"bins":["kipp","docker"]}}}
 ---
 
-# Entity Memory
+# KIPP memory
 
 You have persistent entity memory backed by Qdrant and local embeddings.
 It stores facts about people, projects, tools, preferences, and decisions.
@@ -17,17 +17,17 @@ Facts are updated in place (upserted), not appended — the system stays lean ov
 
 **After conversations or task completions**, log what happened:
 ```
-memory event "<what happened>"
+kipp event "<what happened>"
 ```
 
 **When you learn a clear, structured fact**, store it directly:
 ```
-memory store --type <person|project|tool|preference|decision> --id <key> --content "<fact>"
+kipp store --type <person|project|tool|preference|decision> --id <key> --content "<fact>"
 ```
 
 **Before answering questions about the past** or gathering context:
 ```
-memory search "<query>"
+kipp search "<query>"
 ```
 
 ## Entity types
@@ -50,16 +50,16 @@ memory search "<query>"
 
 | Command | Purpose |
 |---------|---------|
-| `memory event "<text>"` | Log raw observation |
-| `memory store --type T --id K --content "..."` | Upsert entity with fact |
-| `memory search "<query>" [--type T] [--limit N]` | Semantic search |
-| `memory extract [--since 55m \| --all]` | Process events into entities |
-| `memory get <entity_id>` | Show entity detail |
-| `memory list [--type T]` | List all entities |
-| `memory delete <entity_id>` | Delete entity |
-| `memory compact [--max-facts N]` | Prune overgrown entities |
-| `memory expire` | GC expired events and facts |
-| `memory export [--format json\|md]` | Backup entities |
-| `memory import <file>` | Restore from backup |
-| `memory stats` | Collection sizes |
-| `memory init` | Create collections |
+| `kipp event "<text>"` | Log raw observation |
+| `kipp store --type T --id K --content "..."` | Upsert entity with fact |
+| `kipp search "<query>" [--type T] [--limit N]` | Semantic search |
+| `kipp extract [--since 55m \| --all]` | Process events into entities |
+| `kipp get <entity_id>` | Show entity detail |
+| `kipp list [--type T]` | List all entities |
+| `kipp delete <entity_id>` | Delete entity |
+| `kipp compact [--max-facts N]` | Prune overgrown entities |
+| `kipp expire` | GC expired events and facts |
+| `kipp export [--format json\|md]` | Backup entities |
+| `kipp import <file>` | Restore from backup |
+| `kipp stats` | Collection sizes |
+| `kipp init` | Create collections |

@@ -1,6 +1,6 @@
 [Unit]
-Description=Daily entity-memory expiry
-Documentation=https://github.com/sarbloc/memory-system-skill
+Description=Daily KIPP expiry
+Documentation=https://github.com/sarbloc/kipp
 
 [Timer]
 OnCalendar=*-*-* 03:30:00

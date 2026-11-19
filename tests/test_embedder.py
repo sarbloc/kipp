@@ -2,7 +2,7 @@
 
 import math
 
-from entity_memory.embedder import MockEmbedder, cosine_sim
+from kipp.embedder import MockEmbedder, cosine_sim
 
 
 def test_mock_embedder_deterministic(embedder):

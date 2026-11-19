@@ -50,7 +50,7 @@ from typing import Protocol
 
 import numpy as np
 
-from entity_memory.models import Entity
+from kipp.models import Entity
 
 
 # Cosine gate for a sentence→fact match. Tuned (issue #17) against the

@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from entity_memory.extract import (
+from kipp.extract import (
     build_entity_index,
     extract_events,
     extract_events_with_index,
@@ -12,7 +12,7 @@ from entity_memory.extract import (
     parse_lead_tag,
     split_sentences,
 )
-from entity_memory.models import Entity, Fact
+from kipp.models import Entity, Fact
 
 
 class _CountingEmbedder:
@@ -128,7 +128,7 @@ class TestExtractEvents:
         assert result.matched_event_ids == set()
 
     def test_matched_event_ids_includes_matching_event(self, embedder):
-        from entity_memory.merge import build_search_text
+        from kipp.merge import build_search_text
 
         entity = _entity("person:alice", "person", ["Manages the auth team"])
         # An event whose sentence equals the entity's search_text matches
@@ -145,7 +145,7 @@ class TestExtractEvents:
         # MockEmbedder's all-positive vectors floor cosine near 0.7, so no
         # distinct short string scores below a default 0.7 gate — a high gate is
         # the deterministic way to construct a non-match here.
-        from entity_memory.merge import build_search_text
+        from kipp.merge import build_search_text
 
         entity = _entity("person:alice", "person", ["Manages the auth team"])
         st = build_search_text(entity)  # blob; its fact sentence hits the fact row

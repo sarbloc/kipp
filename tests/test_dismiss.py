@@ -8,8 +8,8 @@ Qdrant's contract; the fake returns an already-filtered candidate set.
 
 from click.testing import CliRunner
 
-import entity_memory.cli as cli_mod
-from entity_memory.cli import main
+import kipp.cli as cli_mod
+from kipp.cli import main
 
 
 class _FakePoint:

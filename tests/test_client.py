@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from entity_memory.client import load_config
+from kipp.client import load_config
 
 
 @pytest.fixture
@@ -17,6 +17,7 @@ def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.delenv("QDRANT_URL", raising=False)
     monkeypatch.delenv("ENTITY_MEMORY_CONFIG", raising=False)
+    monkeypatch.delenv("KIPP_CONFIG", raising=False)
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     return tmp_path
 
@@ -107,3 +108,32 @@ class TestLoadConfig:
         _write(isolated_home / ".config" / "entity-memory" / "config.json",
                {"qdrant": {"url": "http://default:6333"}})
         assert load_config()["qdrant"]["url"] == "http://default:6333"
+
+
+class TestKippRename:
+    """KIPP paths win; every pre-rename location and env var still resolves."""
+
+    def test_kipp_path_beats_pre_rename_path(self, isolated_home):
+        _write(isolated_home / ".config" / "kipp" / "config.json",
+               {"qdrant": {"url": "http://kipp:6333"}})
+        _write(isolated_home / ".config" / "entity-memory" / "config.json",
+               {"qdrant": {"url": "http://old:6333"}})
+        assert load_config()["qdrant"]["url"] == "http://kipp:6333"
+
+    def test_pre_rename_path_still_read(self, isolated_home):
+        _write(isolated_home / ".config" / "entity-memory" / "config.json",
+               {"qdrant": {"url": "http://old:6333"}})
+        assert load_config()["qdrant"]["url"] == "http://old:6333"
+
+    def test_kipp_config_env_beats_legacy_env(self, isolated_home, monkeypatch):
+        new, old = isolated_home / "new.json", isolated_home / "old.json"
+        _write(new, {"qdrant": {"url": "http://new:6333"}})
+        _write(old, {"qdrant": {"url": "http://old:6333"}})
+        monkeypatch.setenv("KIPP_CONFIG", str(new))
+        monkeypatch.setenv("ENTITY_MEMORY_CONFIG", str(old))
+        assert load_config()["qdrant"]["url"] == "http://new:6333"
+
+    def test_missing_kipp_config_errors_naming_the_var(self, isolated_home, monkeypatch):
+        monkeypatch.setenv("KIPP_CONFIG", str(isolated_home / "nope.json"))
+        with pytest.raises(FileNotFoundError, match="KIPP_CONFIG"):
+            load_config()

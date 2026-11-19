@@ -5,13 +5,13 @@ import json
 
 import pytest
 
-from entity_memory.export import (
+from kipp.export import (
     export_json,
     export_markdown,
     import_json,
     reject_future_dated_facts,
 )
-from entity_memory.models import Entity, Fact
+from kipp.models import Entity, Fact
 
 
 def _entity():

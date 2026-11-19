@@ -25,19 +25,19 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Callable, Optional
 
-from entity_memory.client import (
+from kipp.client import (
     get_unextracted_events,
     mark_event_extracted,
     scroll_entities,
     upsert_entity,
 )
-from entity_memory.extract import (
+from kipp.extract import (
     MATCH_THRESHOLD,
     build_entity_index,
     extract_events_with_index,
 )
-from entity_memory.merge import build_search_text, merge
-from entity_memory.models import Fact
+from kipp.merge import build_search_text, merge
+from kipp.models import Fact
 
 DEFAULT_BATCH_SIZE = 200
 

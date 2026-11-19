@@ -4,8 +4,8 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from entity_memory.models import Entity, Fact
-from entity_memory.merge import (
+from kipp.models import Entity, Fact
+from kipp.merge import (
     build_search_text,
     compact,
     drop_expired,

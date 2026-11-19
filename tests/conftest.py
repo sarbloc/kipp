@@ -2,7 +2,7 @@
 
 import pytest
 
-from entity_memory.embedder import MockEmbedder
+from kipp.embedder import MockEmbedder
 
 
 @pytest.fixture
