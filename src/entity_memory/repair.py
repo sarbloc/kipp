@@ -87,7 +87,9 @@ def apply_repair(
     one: first each target is written with its incoming facts AND its own
     still-outgoing ones, then every touched entity gets its final state. A
     crash between the phases leaves facts on both ends; re-running repair
-    moves the leftover copy again and it dedups on landing.
+    moves the leftover copy again and it dedups on landing. Known limitation:
+    that recovery re-adds the copy's hit_count (scoring only — no fact is
+    lost). Restore the pre-repair snapshot if exact counts matter.
     """
     by_id = {e.id: e for e in entities}
     leaving = {id(m.fact) for m in plan.moves}
@@ -126,9 +128,7 @@ def _land(target: Entity, fact: Fact, embedder: EmbedderLike, now: datetime) -> 
     (``last_seen or added``) and the earlier effective validity start
     (``valid_from or added``), so repair neither inflates recency nor narrows
     as-of history; it also keeps the longer lifetime (permanent beats any
-    ``expires``). Landing the same moved fact twice (identical text, added
-    and source) is a no-op, so a re-run after an interruption doesn't double
-    hit counts. Expired facts and facts tagged for a different entity
+    ``expires``). Expired facts and facts tagged for a different entity
     (left in place as misattributed) are never dedup candidates.
     """
     candidates = [
@@ -139,8 +139,6 @@ def _land(target: Entity, fact: Fact, embedder: EmbedderLike, now: datetime) -> 
     if dupe is None:
         target.facts.append(fact)
         return
-    if (dupe.text, dupe.added, dupe.source) == (fact.text, fact.added, fact.source):
-        return  # this very move already landed (re-run after an interruption)
     dupe.hit_count += fact.hit_count
     # The merged fact lives as long as the longer-lived copy: permanent wins.
     dupe.expires = None if None in (dupe.expires, fact.expires) else max(dupe.expires, fact.expires)

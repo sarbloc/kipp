@@ -265,18 +265,3 @@ def test_permanent_moved_fact_keeps_dupe_alive(client, emb):
     (fact,) = get_entity(client, "person:alice", domain="dev").facts
     assert fact.expires is None
 
-
-def test_relanding_same_move_does_not_double_count(client, emb):
-    """Target already holds the landed copy (interrupted run): no extra hits."""
-    hub = Entity(id="project:hub", type="project", facts=[
-        Fact(text="[person:alice] Has a company.", added="2026-11-01", source="extract", hit_count=4),
-    ])
-    alice = Entity(id="person:alice", type="person", facts=[
-        Fact(text="Has a company.", added="2026-11-01", source="extract", hit_count=5),
-    ])
-    entities = [hub, alice]
-
-    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
-
-    (fact,) = get_entity(client, "person:alice", domain="dev").facts
-    assert fact.hit_count == 5
