@@ -113,6 +113,22 @@ class TestMerge:
         entity = merge(entity, [longer], embedder, now=NOW)
         assert entity.facts[0].text == "manages auth"
 
+    @pytest.mark.parametrize(
+        ("stored", "incoming", "expected"),
+        [
+            ("2026-04-01", None, None),  # permanent re-assertion wins
+            (None, "2026-04-01", None),  # a TTL copy never shortens a permanent fact
+            ("2026-04-01", "2026-05-01", "2026-05-01"),
+            ("2026-05-01", "2026-04-01", "2026-05-01"),
+        ],
+    )
+    def test_merge_duplicate_keeps_longer_lifetime(self, embedder, stored, incoming, expected):
+        entity = Entity(id="person:alice", type="person")
+        entity = merge(entity, [_fact("manages auth", expires=stored)], embedder, now=NOW)
+        entity = merge(entity, [_fact("manages auth", expires=incoming)], embedder, now=NOW)
+        assert len(entity.facts) == 1
+        assert entity.facts[0].expires == expected
+
     def test_merge_new_facts_appended(self, embedder):
         entity = Entity(id="person:alice", type="person")
         entity = merge(entity, [_fact("manages auth")], embedder, now=NOW)
