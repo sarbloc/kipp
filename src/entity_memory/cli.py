@@ -1,6 +1,7 @@
 """CLI entry point for the memory command."""
 
 import uuid
+from collections import Counter
 from datetime import datetime, timedelta
 
 import click
@@ -455,6 +456,48 @@ def import_cmd(file: str):
         upsert_entity(client, merged, vector)
 
     click.echo(f"Imported {len(imported)} entities.")
+
+
+@main.command()
+@click.option(
+    "--domain", type=click.Choice([*DOMAINS, "all"]), default="all",
+    show_default=True, help="Domain to repair, or 'all'.",
+)
+@click.option("--apply", "apply_changes", is_flag=True, help="Write the moves. Default is a dry run.")
+def repair(domain: str, apply_changes: bool):
+    """Move extracted facts whose [type:id] tag names a different entity.
+
+    Dry run by default: prints the planned moves, tags whose entity doesn't
+    exist (left in place), and per-entity counts of untagged extracted facts
+    (no ground truth, so not moved). Take a backup before --apply.
+    """
+    from entity_memory.repair import apply_repair, plan_repair
+
+    client = get_client()
+    embedder = _get_embedder() if apply_changes else None
+    now = datetime.utcnow()
+
+    for d in DOMAINS if domain == "all" else [domain]:
+        entities = scroll_entities(client, domain=d)
+        plan = plan_repair(entities)
+        moves_by_pair = Counter((m.source_id, m.target_id) for m in plan.moves)
+        click.echo(
+            f"[{d}] {len(plan.moves)} facts to move, "
+            f"{sum(plan.missing_targets.values())} with a missing target, "
+            f"{sum(plan.untagged_extracted.values())} untagged extracted."
+        )
+        for (src, dst), n in moves_by_pair.most_common():
+            click.echo(f"  move {n:>4}  {src} -> {dst}")
+        for tag, n in plan.missing_targets.most_common():
+            click.echo(f"  missing {n:>4}  {tag}")
+        for eid, n in plan.untagged_extracted.most_common(10):
+            click.echo(f"  untagged {n:>4}  {eid}")
+        if apply_changes and plan.moves:
+            rewritten = apply_repair(client, embedder, d, entities, plan, now)
+            click.echo(f"  applied: {rewritten} entities rewritten")
+
+    if not apply_changes:
+        click.echo("DRY-RUN: nothing written. Pass --apply to move facts.")
 
 
 @main.command()
