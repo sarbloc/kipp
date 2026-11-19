@@ -59,6 +59,23 @@ Or drop a config file at `~/.config/entity-memory/config.json` (honors
 The legacy path `~/.openclaw/memory.json` is still read for backward
 compatibility, after the XDG location.
 
+## Maintenance
+
+`memory expire` deletes events past their 30-day TTL and facts past their
+`expires` date. `memory compact` trims entities over the 20-fact cap. Both
+default to the `shared` domain; pass `--domain dev|personal|all` to widen.
+
+To run expiry nightly, install the systemd user units in `contrib/systemd/`:
+
+```bash
+cp contrib/systemd/entity-memory-expire.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now entity-memory-expire.timer
+```
+
+Put any Qdrant env vars (`QDRANT_URL`, `QDRANT_API_KEY`) in
+`~/.config/entity-memory/env`.
+
 ## OpenClaw skill
 
 Install as a skill:

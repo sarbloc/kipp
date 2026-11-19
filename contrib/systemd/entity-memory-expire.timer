@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily entity-memory expiry
+Documentation=https://github.com/sarbloc/memory-system-skill
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
