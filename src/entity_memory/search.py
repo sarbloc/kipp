@@ -59,8 +59,14 @@ _STOPWORDS = frozenset(
 )
 
 
+# Leading bracket groups are routing/provenance ("[person:x]",
+# "[run_id:... profile:personal-act]"), not content: they must not score.
+_LEAD_BRACKETS = re.compile(r"^\s*(?:\[[^\]]*\]\s*)+")
+
+
 def _terms(text: str) -> set[str]:
-    return {w for w in _WORD.findall(text.lower()) if len(w) >= 3 and w not in _STOPWORDS}
+    text = _LEAD_BRACKETS.sub("", text).lower()
+    return {w for w in _WORD.findall(text) if len(w) >= 3 and w not in _STOPWORDS}
 
 
 def _rank_facts(entity: Entity, query: str, now: datetime) -> None:

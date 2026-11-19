@@ -52,6 +52,20 @@ def test_stopwords_do_not_count_as_overlap():
     assert e.facts[0].text == "Recent unrelated fact."
 
 
+def test_leading_provenance_brackets_do_not_count_as_overlap():
+    e = Entity(id="person:a", type="person", facts=[
+        _fact("[run_id:abc profile:personal-act] Root cause found.", last_seen="2026-11-18"),
+        _fact("Prefers the personal profile for errands.", last_seen="2026-01-01"),
+    ])
+
+    _rank_facts(e, "which profile for personal errands", NOW)
+
+    assert e.facts[0].text == "Prefers the personal profile for errands."
+
+    _rank_facts(e, "run_id act", NOW)  # prefix-only terms: no overlap, recency wins
+    assert e.facts[0].text.startswith("[run_id")
+
+
 class _PaddedEmbedder(MockEmbedder):
     def embed(self, text: str) -> list[float]:
         v = super().embed(text)
