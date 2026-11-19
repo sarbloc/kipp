@@ -145,10 +145,10 @@ def qdrant_connection(config: dict | None = None) -> tuple[str, str | None]:
     return url, os.environ.get(api_key_env)
 
 
-def get_client(config: dict | None = None) -> QdrantClient:
-    """Create a QdrantClient from config."""
+def get_client(config: dict | None = None, timeout: int | None = None) -> QdrantClient:
+    """Create a QdrantClient from config. ``timeout=None`` keeps the 5s default."""
     url, api_key = qdrant_connection(config)
-    return QdrantClient(url=url, api_key=api_key)
+    return QdrantClient(url=url, api_key=api_key, timeout=timeout)
 
 
 def ensure_collections(client: QdrantClient) -> list[str]:
