@@ -81,7 +81,7 @@ Put any Qdrant env vars (`QDRANT_URL`, `QDRANT_API_KEY`) in
 `memory backup` takes a native Qdrant snapshot of every collection (all
 domains), downloads it to `~/backups/qdrant/<UTC stamp>/`, checks each file
 against the sha256 Qdrant reports, writes a `manifest.json` of point counts
-and digests, and deletes the server-side copy. Only the newest 14 backups are
+and digests, and deletes the server-side copy. Only the newest 3 backups are
 kept (`--keep`, `--dest` to change). A run that fails leaves nothing behind
 under a stamp name, so every stamp directory is a complete backup.
 

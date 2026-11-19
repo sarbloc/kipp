@@ -36,7 +36,7 @@ import httpx
 
 STAMP_RE = re.compile(r"^\d{8}T\d{6}Z$")
 PARTIAL_PREFIX = ".partial-"
-DEFAULT_KEEP = 14
+DEFAULT_KEEP = 3  # ~133 MB each; three nights of rollback
 CHUNK = 1 << 20
 STALE_PARTIAL_SECONDS = 24 * 3600
 
