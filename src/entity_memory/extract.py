@@ -79,7 +79,10 @@ class ExtractionResult:
 # Leading run of bracket groups, e.g. "[preference][project:orbs] ..." .
 _LEAD_BRACKETS = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)")
 # A well-formed entity tag inside one bracket group: "type:id", no whitespace.
-_ENTITY_TAG = re.compile(r"\[([a-z_]+:[^\]\s]+)\]")
+_ENTITY_TAG = re.compile(r"\[([a-z_]+):([^\]\s]+)\]")
+# Provenance keys callers prefix events with ("[run_id:abc]"). Same shape as a
+# tag but never an entity type, so they must not win the routing (#43).
+PROVENANCE_KEYS = frozenset({"run_id", "session_id", "profile", "trigger_source", "source"})
 
 
 def parse_lead_tag(text: str) -> tuple[str | None, str]:
@@ -87,6 +90,7 @@ def parse_lead_tag(text: str) -> tuple[str | None, str]:
 
     Returns ``(tag, body)``. ``tag`` is the FIRST well-formed ``type:id`` among
     the leading bracket groups (so ``[preference][project:x]`` → ``project:x``),
+    skipping provenance keys (``[run_id:abc][project:x]`` → ``project:x``),
     or None. When there are leading bracket groups, ``body`` has all of them
     stripped; otherwise it is ``text`` unchanged. Brackets later in the text are
     content, not routing.
@@ -94,10 +98,10 @@ def parse_lead_tag(text: str) -> tuple[str | None, str]:
     lead = _LEAD_BRACKETS.match(text)
     if lead is None:
         return None, text
-    tag = _ENTITY_TAG.search(lead.group(1))
-    if tag is None:
-        return None, text
-    return tag.group(1), text[lead.end():]
+    for kind, ident in _ENTITY_TAG.findall(lead.group(1)):
+        if kind not in PROVENANCE_KEYS:
+            return f"{kind}:{ident}", text[lead.end():]
+    return None, text
 
 
 def split_sentences(text: str) -> list[str]:

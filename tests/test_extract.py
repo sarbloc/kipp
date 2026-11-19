@@ -2,6 +2,8 @@
 
 from datetime import datetime
 
+import pytest
+
 from entity_memory.extract import (
     build_entity_index,
     extract_events,
@@ -224,6 +226,16 @@ class TestParseLeadTag:
 
     def test_non_entity_brackets_are_not_a_tag(self):
         text = "[widened from:shared] Alice runs auth."
+        assert parse_lead_tag(text) == (None, text)
+
+    def test_provenance_bracket_is_skipped(self):
+        tag, body = parse_lead_tag("[run_id:abc][project:endurance] Ships nightly.")
+        assert tag == "project:endurance"
+        assert body == "Ships nightly."
+
+    @pytest.mark.parametrize("key", ["run_id", "session_id", "profile", "trigger_source", "source"])
+    def test_provenance_only_is_untagged(self, key):
+        text = f"[{key}:abc] Alice runs auth."
         assert parse_lead_tag(text) == (None, text)
 
     def test_mid_text_tag_ignored(self):
