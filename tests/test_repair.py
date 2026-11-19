@@ -166,3 +166,90 @@ def test_dedup_keeps_latest_original_last_seen(client, emb, target_seen, moved_s
 
     (fact,) = get_entity(client, "person:alice", domain="dev").facts
     assert fact.last_seen == expected
+
+
+def _dupe_pair(moved_kw, target_kw, target_text="Lives in London."):
+    hub = Entity(id="project:hub", type="project", facts=[
+        Fact(text="[person:alice] Lives in London.", source="extract", **moved_kw),
+    ])
+    alice = Entity(id="person:alice", type="person", facts=[
+        Fact(text=target_text, source="mcp:store", **target_kw),
+    ])
+    return [hub, alice]
+
+
+def test_dedup_uses_effective_dates(client, emb):
+    """Missing last_seen/valid_from fall back to added on both sides."""
+    entities = _dupe_pair(
+        {"added": "2026-11-01", "last_seen": "2026-11-02"},
+        {"added": "2026-11-10"},
+    )
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    (fact,) = get_entity(client, "person:alice", domain="dev").facts
+    assert fact.last_seen == "2026-11-10"  # not moved backwards to 11-02
+    assert fact.valid_from == "2026-11-01"  # widened to the moved fact's start
+    assert fact.valid_at("2026-11-05")
+
+
+def test_expired_duplicate_does_not_absorb(client, emb):
+    entities = _dupe_pair(
+        {"added": "2026-11-01"}, {"added": "2026-11-01", "expires": "2026-11-15"},
+    )
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    facts = get_entity(client, "person:alice", domain="dev").facts
+    # The moved fact lands as its own permanent fact; the expired one is left
+    # for `memory expire` instead of swallowing it.
+    assert sorted((f.expires or "") for f in facts) == ["", "2026-11-15"]
+
+
+def test_foreign_tagged_fact_does_not_absorb(client):
+    """A fact tagged for a missing entity stays put and isn't a dedup target."""
+    emb = _TagBlindEmbedder()
+    entities = _dupe_pair(
+        {"added": "2026-11-01"}, {"added": "2026-11-01"},
+        target_text="[person:ghost] Lives in London.",
+    )
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    texts = sorted(f.text for f in get_entity(client, "person:alice", domain="dev").facts)
+    assert texts == ["Lives in London.", "[person:ghost] Lives in London."]
+
+
+def test_interrupted_apply_duplicates_but_never_loses(client, emb):
+    """Crash after the first write: the fact survives somewhere (Codex P1)."""
+    entities = _corpus()
+    for e in entities:
+        upsert_entity(client, e, emb.embed(e.id), domain="dev")
+
+    import entity_memory.repair as repair_mod
+
+    real, calls = repair_mod.upsert_entity, {"n": 0}
+
+    def flaky(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash")
+        return real(*args, **kwargs)
+
+    repair_mod.upsert_entity = flaky
+    try:
+        with pytest.raises(RuntimeError):
+            apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+    finally:
+        repair_mod.upsert_entity = real
+
+    alice = [f.text for f in get_entity(client, "person:alice", domain="dev").facts]
+    assert "Notice period is one month." in alice
+
+    # Re-running on fresh state converges without duplicating on the target.
+    fresh = [get_entity(client, eid, domain="dev") for eid in ("project:hub", "person:alice")]
+    apply_repair(client, emb, "dev", fresh, plan_repair(fresh), NOW)
+    alice = [f.text for f in get_entity(client, "person:alice", domain="dev").facts]
+    assert alice.count("Notice period is one month.") == 1
+    hub = [f.text for f in get_entity(client, "project:hub", domain="dev").facts]
+    assert "[person:alice] Notice period is one month." not in hub
