@@ -1,0 +1,13 @@
+[Unit]
+Description=KIPP: delete expired events and facts in every domain
+Documentation=https://github.com/sarbloc/kipp
+
+[Service]
+Type=oneshot
+# Same env the MCP server sees (QDRANT_URL / QDRANT_API_KEY / KIPP_CONFIG).
+# The kipp file is read last, so it wins over the pre-rename one.
+EnvironmentFile=-%h/.config/entity-memory/env
+EnvironmentFile=-%h/.config/kipp/env
+ExecStart=%h/.local/bin/kipp expire --domain all
+Nice=10
+IOSchedulingClass=idle

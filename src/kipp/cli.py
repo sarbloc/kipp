@@ -9,8 +9,8 @@ import click
 import httpx
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
-from entity_memory.backup import DEFAULT_KEEP, backup_all
-from entity_memory.client import (
+from kipp.backup import DEFAULT_KEEP, backup_all
+from kipp.client import (
     DOMAINS,
     collection_name,
     collection_stats,
@@ -23,23 +23,23 @@ from entity_memory.client import (
     store_event,
     upsert_entity,
 )
-from entity_memory.extract import MATCH_THRESHOLD
-from entity_memory.maintenance import compact_domain, expire_events, expire_facts
-from entity_memory.merge import build_search_text, mark_superseded, merge
-from entity_memory.models import Entity, Fact
-from entity_memory.pipeline import DEFAULT_BATCH_SIZE, run_extraction
+from kipp.extract import MATCH_THRESHOLD
+from kipp.maintenance import compact_domain, expire_events, expire_facts
+from kipp.merge import build_search_text, mark_superseded, merge
+from kipp.models import Entity, Fact
+from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 
 
 def _get_embedder():
     """Lazy-load the embedder (avoids slow import on every CLI call)."""
-    from entity_memory.embedder import Embedder
+    from kipp.embedder import Embedder
 
     return Embedder()
 
 
 @click.group()
 def main():
-    """Entity memory system for AI agents."""
+    """KIPP: entity memory for AI agents."""
     pass
 
 
@@ -186,7 +186,7 @@ def list_entities(entity_type: str | None):
 )
 def search(query: str, entity_type: str | None, limit: int, as_of: str | None):
     """Semantic search across all entities."""
-    from entity_memory.search import search_entities, format_results
+    from kipp.search import search_entities, format_results
 
     client = get_client()
     embedder = _get_embedder()
@@ -416,7 +416,7 @@ def expire(domain: str):
 def export_cmd(fmt: str):
     """Export all entities for backup or inspection."""
     import sys
-    from entity_memory.export import export_json, export_markdown
+    from kipp.export import export_json, export_markdown
 
     client = get_client()
     entities = scroll_entities(client)
@@ -432,7 +432,7 @@ def export_cmd(fmt: str):
 def import_cmd(file: str):
     """Import entities from a JSON export. Runs merge logic (won't duplicate)."""
     import json as json_mod
-    from entity_memory.export import import_json, reject_future_dated_facts
+    from kipp.export import import_json, reject_future_dated_facts
 
     client = get_client()
     ensure_collections(client)
@@ -475,7 +475,7 @@ def repair(domain: str, apply_changes: bool):
     exist (left in place), and per-entity counts of untagged extracted facts
     (no ground truth, so not moved). Take a backup before --apply.
     """
-    from entity_memory.repair import apply_repair, plan_repair
+    from kipp.repair import apply_repair, plan_repair
 
     client = get_client()
     embedder = _get_embedder() if apply_changes else None
@@ -507,7 +507,7 @@ def repair(domain: str, apply_changes: bool):
 @main.command()
 def mcp():
     """Run the MCP stdio server (used by Endurance and other MCP clients)."""
-    from entity_memory.mcp_server import run
+    from kipp.mcp_server import run
 
     run()
 

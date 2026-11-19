@@ -13,7 +13,7 @@ Run from the repo root:
     HF_HUB_OFFLINE=1 python scripts/tune_match_threshold.py
 
 Read-only: it does not touch Qdrant or change any constant. Use the printed
-recommendation to set ``MATCH_THRESHOLD`` in ``src/entity_memory/extract.py``.
+recommendation to set ``MATCH_THRESHOLD`` in ``src/kipp/extract.py``.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from entity_memory.embedder import Embedder, cosine_sim
+from kipp.embedder import Embedder, cosine_sim
 
 FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "data" / "match_pairs.json"
 THRESHOLDS = [round(0.30 + 0.025 * i, 3) for i in range(21)]  # 0.300 … 0.800

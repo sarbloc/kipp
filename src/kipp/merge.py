@@ -7,7 +7,7 @@ from typing import Optional, Protocol
 
 import numpy as np
 
-from entity_memory.models import Entity, Fact
+from kipp.models import Entity, Fact
 
 
 # ── Constants ────────────────────────────────────────────

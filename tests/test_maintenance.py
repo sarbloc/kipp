@@ -7,8 +7,8 @@ import pytest
 from click.testing import CliRunner
 from qdrant_client import QdrantClient
 
-import entity_memory.cli as cli_mod
-from entity_memory.client import (
+import kipp.cli as cli_mod
+from kipp.client import (
     DOMAINS,
     collection_name,
     ensure_collections,
@@ -16,9 +16,9 @@ from entity_memory.client import (
     store_event,
     upsert_entity,
 )
-from entity_memory.embedder import MockEmbedder
-from entity_memory.maintenance import compact_domain, expire_events, expire_facts
-from entity_memory.models import Entity, Fact
+from kipp.embedder import MockEmbedder
+from kipp.maintenance import compact_domain, expire_events, expire_facts
+from kipp.models import Entity, Fact
 
 NOW = datetime(2026, 11, 19, 12, 0, 0)
 DIMS = 384  # collections are created at VECTOR_SIZE

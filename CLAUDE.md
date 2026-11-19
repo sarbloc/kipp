@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Entity-based persistent memory system for OpenClaw agents. Stores knowledge as discrete entities (upserted in place) rather than appending documents. Growth is proportional to unique concepts, not time. Published as a ClawHub community skill.
+KIPP (renamed from `entity-memory`; repo was `memory-system-skill`): entity-based persistent memory for AI agents, used by Endurance and OpenClaw. Stores knowledge as discrete entities (upserted in place) rather than appending documents. Growth is proportional to unique concepts, not time. Published as a ClawHub community skill.
 
 The full spec is in `MEMORY-SYSTEM-SPEC.md`.
 
@@ -23,13 +23,13 @@ The full spec is in `MEMORY-SYSTEM-SPEC.md`.
 pip install -e .
 
 # Run CLI
-memory <command>
+kipp <command>      # `memory` is a pre-rename alias; Endurance's MEMORY_BIN still uses it
 
 # Start Qdrant
 docker compose up -d
 
 # Initialize collections
-memory init
+kipp init
 
 # Run tests
 pytest
@@ -47,7 +47,7 @@ The three kinds:
 - **`events`** — short-term observations (rolling 30-day window, auto-expires). Source material for entity extraction.
 - **`decisions`** — architectural/strategic choices. Same structure as entities but permanent, never expire.
 
-### Key modules (`src/entity_memory/`)
+### Key modules (`src/kipp/`)
 
 | File | Purpose |
 |------|---------|
@@ -59,11 +59,11 @@ The three kinds:
 | `extract.py` | Event → entity extraction (sentence splitting, matching) |
 | `search.py` | Vector + text + filter search fusion |
 | `export.py` | Export/import (JSON and markdown formats) |
-| `mcp_server.py` | MCP stdio server (`memory mcp`) exposing operations as tools |
+| `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |
 
 ### MCP entrypoint
 
-`memory mcp` runs an MCP stdio server using the official Python SDK (`mcp` package). Tools mirror the CLI verbs and add a `domain` parameter for routing:
+`kipp mcp` runs an MCP stdio server using the official Python SDK (`mcp` package). Tools mirror the CLI verbs and add a `domain` parameter for routing:
 
 | Tool | Maps to |
 |------|---------|
@@ -97,4 +97,4 @@ HALF_LIFE_DAYS = 30
 
 - Unit tests use `MockEmbedder` (deterministic hash-based vectors, 48 dims). Tests merge mechanics, not semantic quality.
 - Integration tests require a running Qdrant container. Use `conftest.py` fixtures for temporary collections.
-- Config lives at `~/.openclaw/memory.json` (or env vars). Qdrant API key via `QDRANT_API_KEY` env var.
+- Config lives at `~/.config/kipp/config.json` (falls back to `~/.config/entity-memory/config.json`, then `~/.openclaw/memory.json`), or env vars (`QDRANT_URL`, `KIPP_CONFIG`). Qdrant API key via `QDRANT_API_KEY` env var.

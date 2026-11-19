@@ -16,9 +16,9 @@ from qdrant_client.models import (
     SearchParams,
 )
 
-from entity_memory.client import collection_name, point_to_entity
-from entity_memory.merge import fact_score
-from entity_memory.models import Entity
+from kipp.client import collection_name, point_to_entity
+from kipp.merge import fact_score
+from kipp.models import Entity
 
 
 class EmbedderLike(Protocol):

@@ -15,16 +15,16 @@ import uuid
 import pytest
 from click.testing import CliRunner
 
-import entity_memory.cli as cli_mod
-from entity_memory.cli import main
-from entity_memory.client import (
+import kipp.cli as cli_mod
+from kipp.cli import main
+from kipp.client import (
     ALL_COLLECTIONS,
     get_unextracted_events,
     store_event,
     upsert_entity,
 )
-from entity_memory.merge import build_search_text
-from entity_memory.models import Entity, Fact
+from kipp.merge import build_search_text
+from kipp.models import Entity, Fact
 
 TODAY = "2026-03-10"
 NOW_ISO = "2026-03-10T12:00:00"

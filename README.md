@@ -1,6 +1,13 @@
-# Entity Memory
+# KIPP
 
-Persistent entity-based memory system for AI agents. Stores knowledge as discrete entities that are upserted in place — growth is proportional to unique concepts, not time.
+Memory for AI agents that keeps one current record per thing, not an
+ever-growing log. Local, deterministic, no LLM in the loop.
+
+Knowledge is stored as discrete entities upserted in place, so storage grows
+with the number of distinct things, not with time.
+
+> Renamed from `entity-memory`. The `memory` command still works as an alias,
+> and the old config paths and `ENTITY_MEMORY_CONFIG` are still read.
 
 ## Quick start
 
@@ -12,20 +19,38 @@ docker compose up -d
 pip install -e .
 
 # Initialize collections
-memory init
+kipp init
 
 # Store a fact
-memory store --type person --id alice --content "Manages the auth team"
+kipp store --type person --id alice --content "Manages the auth team"
 
 # Search
-memory search "who handles authentication"
+kipp search "who handles authentication"
 
 # Log an observation
-memory event "Task completed: built auth API. Alice reviewed."
+kipp event "Task completed: built auth API. Alice reviewed."
 
 # Process events into entities
-memory extract --all
+kipp extract --all
 ```
+
+## Upgrading from entity-memory
+
+The pip distribution changed name, so pipx sees a new app. Swap them, or
+`memory` keeps pointing at the old install and fails to import:
+
+```bash
+pipx uninstall entity-memory
+pipx install -e .            # provides `kipp` and the `memory` alias
+```
+
+`scripts/install.sh` does this for you. Existing `entity-memory-*` systemd
+units keep working, because they call `memory`, which is now the alias. To
+move to the new unit names, disable the old timers, remove their files from
+`~/.config/systemd/user/`, then install the `kipp-*` units as described under
+Maintenance.
+
+Qdrant data and collection names are unchanged.
 
 ## Architecture
 
@@ -42,9 +67,9 @@ without any file via environment variables:
 
 - `QDRANT_URL` — Qdrant endpoint (highest precedence; no config file needed)
 - `QDRANT_API_KEY` — API key, if your Qdrant requires one
-- `ENTITY_MEMORY_CONFIG` — path to a config JSON (overrides the default location)
+- `KIPP_CONFIG` — path to a config JSON (overrides the default location)
 
-Or drop a config file at `~/.config/entity-memory/config.json` (honors
+Or drop a config file at `~/.config/kipp/config.json` (honors
 `$XDG_CONFIG_HOME` when set to an absolute path):
 
 ```json
@@ -56,29 +81,29 @@ Or drop a config file at `~/.config/entity-memory/config.json` (honors
 }
 ```
 
-The legacy path `~/.openclaw/memory.json` is still read for backward
-compatibility, after the XDG location.
+The pre-rename `~/.config/entity-memory/config.json` and the legacy
+`~/.openclaw/memory.json` are still read, in that order, after it.
 
 ## Maintenance
 
-`memory expire` deletes events past their 30-day TTL and facts past their
-`expires` date. `memory compact` trims entities over the 20-fact cap. Both
+`kipp expire` deletes events past their 30-day TTL and facts past their
+`expires` date. `kipp compact` trims entities over the 20-fact cap. Both
 default to the `shared` domain; pass `--domain dev|personal|all` to widen.
 
 To run expiry nightly, install the systemd user units in `contrib/systemd/`:
 
 ```bash
-cp contrib/systemd/entity-memory-expire.* ~/.config/systemd/user/
+cp contrib/systemd/kipp-expire.* ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now entity-memory-expire.timer
+systemctl --user enable --now kipp-expire.timer
 ```
 
 Put any Qdrant env vars (`QDRANT_URL`, `QDRANT_API_KEY`) in
-`~/.config/entity-memory/env`.
+`~/.config/kipp/env`.
 
 ### Backup and restore
 
-`memory backup` takes a native Qdrant snapshot of every collection (all
+`kipp backup` takes a native Qdrant snapshot of every collection (all
 domains), downloads it to `~/backups/qdrant/<UTC stamp>/`, checks each file
 against the sha256 Qdrant reports, writes a `manifest.json` of point counts
 and digests, and deletes the server-side copy. Only the newest 3 backups are
@@ -91,9 +116,9 @@ not drive failure. Copy the directory elsewhere if you need that.
 Install the daily timer (04:45, after expiry) the same way:
 
 ```bash
-cp contrib/systemd/entity-memory-backup.* ~/.config/systemd/user/
+cp contrib/systemd/kipp-backup.* ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now entity-memory-backup.timer
+systemctl --user enable --now kipp-backup.timer
 ```
 
 Restore one collection (replaces its contents):

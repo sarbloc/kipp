@@ -42,7 +42,7 @@ import warnings
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct, SnapshotPriority
 
-from entity_memory.client import (
+from kipp.client import (
     collection_name,
     ensure_collections,
     get_client,
@@ -50,11 +50,11 @@ from entity_memory.client import (
     scroll_entities,
     upsert_entity,
 )
-from entity_memory.embedder import Embedder
-from entity_memory.extract import parse_lead_tag
-from entity_memory.merge import build_search_text
-from entity_memory.models import Entity, Fact
-from entity_memory.repair import apply_repair, plan_repair
+from kipp.embedder import Embedder
+from kipp.extract import parse_lead_tag
+from kipp.merge import build_search_text
+from kipp.models import Entity, Fact
+from kipp.repair import apply_repair, plan_repair
 
 DOMAINS = ("shared", "dev", "personal")
 KINDS = ("entities", "decisions")

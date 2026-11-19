@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import TextIO
 
-from entity_memory.models import Entity, Fact
+from kipp.models import Entity, Fact
 
 
 def export_json(entities: list[Entity], out: TextIO) -> None:

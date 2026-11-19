@@ -10,8 +10,8 @@ events. Read-only against the configured Qdrant.
 Run: python scripts/bench_untagged_matching.py
 """
 import re, numpy as np
-from entity_memory.client import get_client, collection_name, scroll_entities, DOMAINS
-from entity_memory.extract import split_sentences
+from kipp.client import get_client, collection_name, scroll_entities, DOMAINS
+from kipp.extract import split_sentences
 from sentence_transformers import SentenceTransformer
 m = SentenceTransformer("all-MiniLM-L6-v2"); c = get_client()
 LEAD = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)")

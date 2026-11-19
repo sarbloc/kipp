@@ -35,7 +35,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from entity_memory.models import Entity, Event, Fact
+from kipp.models import Entity, Event, Fact
 
 DOMAINS = ["shared", "dev", "personal"]
 COLLECTION_KINDS = ["entities", "events", "decisions"]
@@ -75,14 +75,21 @@ def _xdg_config_home() -> Path:
     return Path.home() / ".config"
 
 
+# Explicit config path env vars, highest precedence first. ENTITY_MEMORY_CONFIG
+# is the pre-rename name, still honoured.
+CONFIG_ENV_VARS = ("KIPP_CONFIG", "ENTITY_MEMORY_CONFIG")
+
+
 def _config_search_paths() -> list[Path]:
     """Default config file locations, highest precedence first.
 
-    Consulted only when ``ENTITY_MEMORY_CONFIG`` is unset. The legacy
-    ``~/.openclaw/memory.json`` path is kept last so existing OpenClaw/Endurance
-    installs keep resolving unchanged.
+    Consulted only when no config env var is set. The pre-rename
+    ``entity-memory`` directory and the legacy ``~/.openclaw/memory.json`` path
+    are kept after the KIPP location so existing installs keep resolving
+    unchanged.
     """
     return [
+        _xdg_config_home() / "kipp" / "config.json",
         _xdg_config_home() / "entity-memory" / "config.json",
         Path.home() / ".openclaw" / "memory.json",
     ]
@@ -94,13 +101,15 @@ def load_config() -> dict:
     Precedence, highest first:
 
     1. ``QDRANT_URL`` env var — point at any Qdrant with no config file at all.
-    2. ``ENTITY_MEMORY_CONFIG`` env var — explicit path to a config JSON. When
+    2. ``KIPP_CONFIG`` (or the pre-rename ``ENTITY_MEMORY_CONFIG``) env var —
+       explicit path to a config JSON. When
        set it is the *only* file consulted; if it's missing we raise rather than
        silently using a different Qdrant — unless ``QDRANT_URL`` is also set,
        which is higher precedence and supplies the url without needing a file.
-    3. ``~/.config/entity-memory/config.json`` — default config location.
-    4. ``~/.openclaw/memory.json`` — legacy OpenClaw path, kept for back-compat.
-    5. Built-in defaults (localhost Qdrant).
+    3. ``~/.config/kipp/config.json`` — default config location.
+    4. ``~/.config/entity-memory/config.json`` — pre-rename location.
+    5. ``~/.openclaw/memory.json`` — legacy OpenClaw path, kept for back-compat.
+    6. Built-in defaults (localhost Qdrant).
 
     The chosen config file's top-level keys overlay the defaults; ``QDRANT_URL``
     then overrides the resolved url, so a deployment can point at a different
@@ -110,7 +119,10 @@ def load_config() -> dict:
         "qdrant": {"url": "http://127.0.0.1:6333", "api_key_env": "QDRANT_API_KEY"},
     }
     url_override = os.environ.get("QDRANT_URL")
-    explicit = os.environ.get("ENTITY_MEMORY_CONFIG")
+    explicit_var = next(
+        (v for v in CONFIG_ENV_VARS if os.environ.get(v)), None,
+    )
+    explicit = os.environ.get(explicit_var) if explicit_var else None
     if explicit:
         explicit_path = Path(explicit)
         if explicit_path.exists():
@@ -120,7 +132,7 @@ def load_config() -> dict:
             # Operator pointed at a config we can't read and gave no QDRANT_URL
             # to fall back on — abort rather than silently using another Qdrant.
             raise FileNotFoundError(
-                f"ENTITY_MEMORY_CONFIG points at {explicit!r}, which does not "
+                f"{explicit_var} points at {explicit!r}, which does not "
                 "exist; set QDRANT_URL or fix the path."
             )
         # else: QDRANT_URL (higher precedence) supplies the url below, so a
@@ -186,7 +198,7 @@ def entity_point_id(entity_id: str) -> str:
 
 def entity_to_point(entity: Entity, vector: list[float]) -> PointStruct:
     """Convert an Entity to a Qdrant PointStruct."""
-    from entity_memory.merge import build_search_text
+    from kipp.merge import build_search_text
 
     payload = {
         "entity_id": entity.id,

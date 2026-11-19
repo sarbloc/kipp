@@ -1,4 +1,4 @@
-"""MCP stdio server exposing entity-memory operations as tools.
+"""MCP stdio server exposing KIPP operations as tools.
 
 Started by `memory mcp`. Talks the Model Context Protocol over stdio so an
 MCP client (e.g. Endurance, Claude Code, etc.) can invoke memory operations
@@ -16,7 +16,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-from entity_memory.client import (
+from kipp.client import (
     DOMAINS,
     collection_stats,
     delete_entity,
@@ -29,15 +29,15 @@ from entity_memory.client import (
     store_event,
     upsert_entity,
 )
-from entity_memory.extract import MATCH_THRESHOLD
-from entity_memory.merge import build_search_text, compact, mark_superseded, merge
-from entity_memory.models import Entity, Fact
-from entity_memory.pipeline import DEFAULT_BATCH_SIZE, run_extraction
-from entity_memory.search import format_results, search_entities
+from kipp.extract import MATCH_THRESHOLD
+from kipp.merge import build_search_text, compact, mark_superseded, merge
+from kipp.models import Entity, Fact
+from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
+from kipp.search import format_results, search_entities
 
 EVENT_TTL_DAYS = 30
 
-mcp = FastMCP("entity-memory")
+mcp = FastMCP("kipp")
 
 _embedder = None
 
@@ -46,7 +46,7 @@ def _embedder_instance():
     """Lazy-load the embedder so import time stays cheap."""
     global _embedder
     if _embedder is None:
-        from entity_memory.embedder import Embedder
+        from kipp.embedder import Embedder
 
         _embedder = Embedder()
     return _embedder

@@ -14,7 +14,7 @@ from types import SimpleNamespace
 import httpx
 import pytest
 
-from entity_memory.backup import PARTIAL_PREFIX, STALE_PARTIAL_SECONDS, backup_all, prune
+from kipp.backup import PARTIAL_PREFIX, STALE_PARTIAL_SECONDS, backup_all, prune
 
 NOW = datetime(2026, 11, 19, 16, 0, 0)
 STAMP = "20261119T160000Z"
