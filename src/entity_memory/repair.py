@@ -22,7 +22,7 @@ from qdrant_client import QdrantClient
 
 from entity_memory.client import upsert_entity
 from entity_memory.extract import parse_lead_tag
-from entity_memory.merge import build_search_text, merge
+from entity_memory.merge import build_search_text, find_duplicate
 from entity_memory.models import Entity, Fact
 
 EXTRACT_SOURCE = "extract"
@@ -79,21 +79,23 @@ def apply_repair(
     """Execute ``plan``'s moves against ``domain``. Returns entities rewritten.
 
     Each moved fact keeps its provenance and timestamps; only the text loses
-    its tag. The target merge dedups against existing facts, so a fact the
-    target already holds bumps that fact's hit_count instead of duplicating.
+    its tag. Two phases: every outgoing fact is detached first, so an incoming
+    fact can never dedup into a fact that is itself about to leave (A→B plus
+    B→C would otherwise drop A's fact). Then each fact lands on its target via
+    ``_land``, which dedups without treating the move as a fresh observation.
     """
     by_id = {e.id: e for e in entities}
     touched: dict[str, Entity] = {}
 
+    leaving = {id(m.fact) for m in plan.moves}
     for move in plan.moves:
-        source, target = by_id[move.source_id], by_id[move.target_id]
-        source.facts = [f for f in source.facts if f is not move.fact]
-        moved = replace(move.fact, text=move.body, embedding=None)
-        merge(target, [moved], embedder, now=now)
-        # merge() stamps a newly appended fact last_seen=today; a move is not a
-        # re-observation, so restore the original recency for compaction.
-        moved.last_seen = move.fact.last_seen
+        source = by_id[move.source_id]
+        source.facts = [f for f in source.facts if id(f) not in leaving]
         touched[source.id] = source
+
+    for move in plan.moves:
+        target = by_id[move.target_id]
+        _land(target, replace(move.fact, text=move.body, embedding=None), embedder)
         touched[target.id] = target
 
     for entity in touched.values():
@@ -103,3 +105,24 @@ def apply_repair(
             domain=domain,
         )
     return len(touched)
+
+
+def _land(target: Entity, fact: Fact, embedder: EmbedderLike) -> None:
+    """Add a moved fact to ``target``, folding it into a current duplicate.
+
+    Unlike ``merge()``, a move is not a re-observation: a duplicate absorbs the
+    moved fact's hit_count and keeps the LATER of the two last_seen dates
+    rather than being stamped today, so repair doesn't inflate recency for
+    search and compaction.
+    """
+    current = [f for f in target.facts if f.is_current]
+    dupe = find_duplicate(fact, current, embedder)
+    if dupe is None:
+        target.facts.append(fact)
+        return
+    dupe.hit_count += fact.hit_count
+    dupe.last_seen = max(filter(None, (dupe.last_seen, fact.last_seen)), default=None)
+    if fact.valid_from is not None:
+        dupe.valid_from = min(fact.valid_from, dupe.valid_from or dupe.added)
+    if len(fact.text) > len(dupe.text):
+        dupe.text, dupe.embedding = fact.text, fact.embedding

@@ -10,6 +10,7 @@ from qdrant_client import QdrantClient
 import entity_memory.cli as cli_mod
 from entity_memory.client import ensure_collections, get_entity, upsert_entity
 from entity_memory.embedder import MockEmbedder
+from entity_memory.extract import parse_lead_tag
 from entity_memory.models import Entity, Fact
 from entity_memory.repair import apply_repair, plan_repair
 
@@ -121,3 +122,47 @@ def test_cli_dry_run_writes_nothing(client, emb, monkeypatch):
     assert res.exit_code == 0, res.output
     assert "applied: 2 entities rewritten" in res.output
     assert len(get_entity(client, "person:alice", domain="dev").facts) == 3
+
+
+class _TagBlindEmbedder(_PaddedEmbedder):
+    """Embeds the tag-stripped body, so "[x:y] Same." dedups against "Same."."""
+
+    def embed(self, text: str) -> list[float]:
+        return super().embed(parse_lead_tag(text)[1].strip())
+
+
+def test_chained_moves_lose_nothing(client):
+    """A→B and B→C where A's fact would dedup into B's outgoing fact (Codex P1)."""
+    emb = _TagBlindEmbedder()
+    a = Entity(id="project:a", type="project", facts=[_fact("[person:b] Same text here.")])
+    b = Entity(id="person:b", type="person", facts=[_fact("[project:c] Same text here.")])
+    c = Entity(id="project:c", type="project", facts=[_fact("C's own fact.", source="mcp:store")])
+    entities = [a, b, c]
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    assert [f.text for f in get_entity(client, "person:b", domain="dev").facts] == ["Same text here."]
+    assert "Same text here." in [f.text for f in get_entity(client, "project:c", domain="dev").facts]
+    assert get_entity(client, "project:a", domain="dev").facts == []
+
+
+@pytest.mark.parametrize(
+    ("target_seen", "moved_seen", "expected"),
+    [("2026-10-01", "2026-11-02", "2026-11-02"), ("2026-11-10", "2026-11-02", "2026-11-10")],
+)
+def test_dedup_keeps_latest_original_last_seen(client, emb, target_seen, moved_seen, expected):
+    """A move into a duplicate is not a fresh observation (Codex P2)."""
+    hub = Entity(id="project:hub", type="project", facts=[
+        Fact(text="[person:alice] Lives in London.", added="2026-09-01",
+             source="extract", last_seen=moved_seen),
+    ])
+    alice = Entity(id="person:alice", type="person", facts=[
+        Fact(text="Lives in London.", added="2026-09-01", source="mcp:store",
+             last_seen=target_seen),
+    ])
+    entities = [hub, alice]
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    (fact,) = get_entity(client, "person:alice", domain="dev").facts
+    assert fact.last_seen == expected
