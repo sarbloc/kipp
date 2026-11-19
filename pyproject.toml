@@ -11,6 +11,7 @@ dependencies = [
     "qdrant-client>=1.12,<2",
     "sentence-transformers>=3.0",
     "click>=8.0",
+    "httpx>=0.25",  # direct use in backup.py (snapshot download); also transitive via qdrant-client
     "numpy>=1.24",
     "mcp>=1.0,<2",  # FastMCP import path removed in SDK 2.x (#29)
 ]
