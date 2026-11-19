@@ -125,7 +125,10 @@ def _land(target: Entity, fact: Fact, embedder: EmbedderLike, now: datetime) -> 
     moved fact's hit_count and keeps the later effective observation date
     (``last_seen or added``) and the earlier effective validity start
     (``valid_from or added``), so repair neither inflates recency nor narrows
-    as-of history. Expired facts and facts tagged for a different entity
+    as-of history; it also keeps the longer lifetime (permanent beats any
+    ``expires``). Landing the same moved fact twice (identical text, added
+    and source) is a no-op, so a re-run after an interruption doesn't double
+    hit counts. Expired facts and facts tagged for a different entity
     (left in place as misattributed) are never dedup candidates.
     """
     candidates = [
@@ -136,7 +139,11 @@ def _land(target: Entity, fact: Fact, embedder: EmbedderLike, now: datetime) -> 
     if dupe is None:
         target.facts.append(fact)
         return
+    if (dupe.text, dupe.added, dupe.source) == (fact.text, fact.added, fact.source):
+        return  # this very move already landed (re-run after an interruption)
     dupe.hit_count += fact.hit_count
+    # The merged fact lives as long as the longer-lived copy: permanent wins.
+    dupe.expires = None if None in (dupe.expires, fact.expires) else max(dupe.expires, fact.expires)
     dupe.last_seen = max(fact.last_seen or fact.added, dupe.last_seen or dupe.added)
     start = min(fact.valid_from or fact.added, dupe.valid_from or dupe.added)
     if start < (dupe.valid_from or dupe.added):

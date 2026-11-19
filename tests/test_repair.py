@@ -253,3 +253,30 @@ def test_interrupted_apply_duplicates_but_never_loses(client, emb):
     assert alice.count("Notice period is one month.") == 1
     hub = [f.text for f in get_entity(client, "project:hub", domain="dev").facts]
     assert "[person:alice] Notice period is one month." not in hub
+
+
+def test_permanent_moved_fact_keeps_dupe_alive(client, emb):
+    entities = _dupe_pair(
+        {"added": "2026-11-01"}, {"added": "2026-11-01", "expires": "2026-11-20"},
+    )
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    (fact,) = get_entity(client, "person:alice", domain="dev").facts
+    assert fact.expires is None
+
+
+def test_relanding_same_move_does_not_double_count(client, emb):
+    """Target already holds the landed copy (interrupted run): no extra hits."""
+    hub = Entity(id="project:hub", type="project", facts=[
+        Fact(text="[person:alice] Has a company.", added="2026-11-01", source="extract", hit_count=4),
+    ])
+    alice = Entity(id="person:alice", type="person", facts=[
+        Fact(text="Has a company.", added="2026-11-01", source="extract", hit_count=5),
+    ])
+    entities = [hub, alice]
+
+    apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
+
+    (fact,) = get_entity(client, "person:alice", domain="dev").facts
+    assert fact.hit_count == 5
