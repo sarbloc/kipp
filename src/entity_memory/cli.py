@@ -19,7 +19,8 @@ from entity_memory.client import (
     upsert_entity,
 )
 from entity_memory.extract import MATCH_THRESHOLD
-from entity_memory.merge import build_search_text, compact, drop_expired, mark_superseded, merge
+from entity_memory.maintenance import compact_domain, expire_events, expire_facts
+from entity_memory.merge import build_search_text, mark_superseded, merge
 from entity_memory.models import Entity, Fact
 from entity_memory.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 
@@ -355,65 +356,46 @@ def dismiss(src: str, domain: str, keep: tuple[str, ...], apply_changes: bool):
     click.echo(f"Dismissed {len(matched_ids)} events (extracted=True).")
 
 
+def _resolve_domains(domain: str) -> list[str]:
+    return list(DOMAINS) if domain == "all" else [domain]
+
+
+# Maintenance commands default to `shared` (the pre-#32 behaviour) so existing
+# callers keep their blast radius; `--domain all` opts in to every domain.
+_maintenance_domain = click.option(
+    "--domain", type=click.Choice([*DOMAINS, "all"]), default="shared",
+    show_default=True, help="Domain to operate on, or 'all'.",
+)
+
+
 @main.command(name="compact")
 @click.option("--max-facts", default=20, help="Max facts per entity")
-def compact_cmd(max_facts: int):
+@_maintenance_domain
+def compact_cmd(max_facts: int, domain: str):
     """Run compaction on all entities exceeding the facts limit."""
     client = get_client()
     embedder = _get_embedder()
-    entities = scroll_entities(client)
-
-    compacted = 0
     now = datetime.utcnow()
-    for entity in entities:
-        if len(entity.facts) > max_facts:
-            entity = compact(entity, max_facts=max_facts, now=now)
-            vector = embedder.embed(build_search_text(entity))
-            upsert_entity(client, entity, vector)
-            compacted += 1
 
-    click.echo(f"Compacted {compacted} entities (max_facts={max_facts}).")
+    for d in _resolve_domains(domain):
+        compacted = compact_domain(client, embedder, d, now, max_facts=max_facts)
+        click.echo(f"[{d}] Compacted {compacted} entities (max_facts={max_facts}).")
 
 
 @main.command()
-def expire():
+@_maintenance_domain
+def expire(domain: str):
     """Garbage-collect expired events and entity facts."""
     client = get_client()
     embedder = _get_embedder()
     now = datetime.utcnow()
 
-    # Expire events
-    expired_events = 0
-    offset = None
-    while True:
-        points, next_offset = client.scroll(
-            collection_name="events", limit=100, offset=offset, with_payload=True,
+    for d in _resolve_domains(domain):
+        expired_events = expire_events(client, d, now)
+        updated_entities = expire_facts(client, embedder, d, now)
+        click.echo(
+            f"[{d}] Expired {expired_events} events, updated {updated_entities} entities."
         )
-        expired_ids = []
-        for p in points:
-            expires = p.payload.get("expires")
-            if expires and datetime.fromisoformat(expires) < now:
-                expired_ids.append(p.id)
-        if expired_ids:
-            client.delete(collection_name="events", points_selector=expired_ids)
-            expired_events += len(expired_ids)
-        if next_offset is None:
-            break
-        offset = next_offset
-
-    # Expire entity facts
-    updated_entities = 0
-    entities = scroll_entities(client)
-    for entity in entities:
-        before = len(entity.facts)
-        entity.facts = drop_expired(entity.facts, now)
-        if len(entity.facts) < before:
-            entity.last_updated = now.isoformat()
-            vector = embedder.embed(build_search_text(entity))
-            upsert_entity(client, entity, vector)
-            updated_entities += 1
-
-    click.echo(f"Expired {expired_events} events, updated {updated_entities} entities.")
 
 
 @main.command(name="export")
