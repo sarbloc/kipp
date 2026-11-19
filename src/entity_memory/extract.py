@@ -12,6 +12,17 @@ sentence match an existing entity, so callers can mark *only* those events
 extracted and leave fully-unmatched events as new-entity candidates rather
 than silently burning them.
 
+Routing (issue #33): an event whose text opens with a ``[type:id]`` tag (e.g.
+``[person:sarbloc] Has a limited company.``) names its own subject. When that
+entity exists, every sentence of the event attaches to it — no cosine. When it
+doesn't exist, the whole event stays unmatched so the LLM agent can create the
+entity. Untagged events go to cosine matching ONLY when the caller opts in with
+``match_untagged=True``: benchmarked on 265 tagged live sentences (where the tag
+is ground truth), cosine picked the right entity 35% of the time at the shipped
+threshold and never better than ~60% with any threshold/margin combination —
+it fed misattributed facts into "hub" entities that then attracted even more.
+Leaving untagged events to the LLM path is the safe default.
+
 Matching shape (issue #17): a sentence is compared against each of an entity's
 facts *individually* and scored best-of, NOT against the concatenated
 ``build_search_text`` blob. The blob is the centroid of up to 10 different
@@ -33,7 +44,7 @@ microseconds — the cost stays in arithmetic, not embedding.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Protocol
 
@@ -63,6 +74,30 @@ class ExtractionResult:
     unmatched: list[str]  # sentences with no entity match
     events_processed: int
     matched_event_ids: set[str]  # ids of events with >=1 sentence matched to an entity
+
+
+# Leading run of bracket groups, e.g. "[preference][project:orbs] ..." .
+_LEAD_BRACKETS = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)")
+# A well-formed entity tag inside one bracket group: "type:id", no whitespace.
+_ENTITY_TAG = re.compile(r"\[([a-z_]+:[^\]\s]+)\]")
+
+
+def parse_lead_tag(text: str) -> tuple[str | None, str]:
+    """Split a leading ``[type:id]`` subject tag off ``text``.
+
+    Returns ``(tag, body)``. ``tag`` is the FIRST well-formed ``type:id`` among
+    the leading bracket groups (so ``[preference][project:x]`` → ``project:x``),
+    or None. When there are leading bracket groups, ``body`` has all of them
+    stripped; otherwise it is ``text`` unchanged. Brackets later in the text are
+    content, not routing.
+    """
+    lead = _LEAD_BRACKETS.match(text)
+    if lead is None:
+        return None, text
+    tag = _ENTITY_TAG.search(lead.group(1))
+    if tag is None:
+        return None, text
+    return tag.group(1), text[lead.end():]
 
 
 def split_sentences(text: str) -> list[str]:
@@ -97,6 +132,7 @@ class EntityIndex:
     entities: list[Entity]
     matrix: np.ndarray  # (n_rows, dim), L2-normalized rows
     row_owner: np.ndarray  # (n_rows,) int → index into `entities`
+    by_id: dict[str, Entity] = field(default_factory=dict)  # tag routing
 
     def best_match(
         self, sent_vec: list[float], threshold: float = MATCH_THRESHOLD
@@ -119,8 +155,14 @@ class EntityIndex:
         return self.entities[int(self.row_owner[best])]
 
 
-def build_entity_index(entities: list[Entity], embedder: EmbedderLike) -> EntityIndex:
+def build_entity_index(
+    entities: list[Entity], embedder: EmbedderLike, *, embed_facts: bool = True,
+) -> EntityIndex:
     """Embed every fact once, up front, into a normalized match matrix.
+
+    ``embed_facts=False`` builds only the id lookup used for tag routing and
+    skips embedding the corpus — the right call when untagged cosine matching
+    is off, since nothing would read the matrix.
 
     One row per fact (the ``[type] id`` header is deliberately excluded — entity
     ids are not natural language and only add noise; see issue #17). Building
@@ -134,10 +176,11 @@ def build_entity_index(entities: list[Entity], embedder: EmbedderLike) -> Entity
     ents = list(entities)
     rows: list[list[float]] = []
     row_owner: list[int] = []
-    for i, entity in enumerate(ents):
-        for fact in entity.facts:
-            rows.append(embedder.embed(fact.text))
-            row_owner.append(i)
+    if embed_facts:
+        for i, entity in enumerate(ents):
+            for fact in entity.facts:
+                rows.append(embedder.embed(fact.text))
+                row_owner.append(i)
 
     if rows:
         matrix = np.asarray(rows, dtype=np.float32)
@@ -151,6 +194,7 @@ def build_entity_index(entities: list[Entity], embedder: EmbedderLike) -> Entity
         entities=ents,
         matrix=matrix,
         row_owner=np.asarray(row_owner, dtype=np.int64),
+        by_id={e.id: e for e in ents},
     )
 
 
@@ -190,18 +234,39 @@ def extract_events_with_index(
     embedder: EmbedderLike,
     now: datetime | None = None,
     threshold: float = MATCH_THRESHOLD,
+    match_untagged: bool = False,
 ) -> ExtractionResult:
-    """Match sentences in ``events`` against a prebuilt entity index.
+    """Route sentences in ``events`` to entities in a prebuilt index.
 
-    Each sentence is embedded once; matching is cosine-only against the index.
+    Tagged events route by id (see module docstring). Untagged events are
+    cosine-matched per sentence only when ``match_untagged`` is set; otherwise
+    their sentences are all unmatched. Each cosine-matched sentence is
+    embedded once; tag-routed sentences are never embedded here.
     """
     matched: list[tuple[str, Entity]] = []
     unmatched: list[str] = []
     matched_event_ids: set[str] = set()
 
     for event in events:
-        for sentence in split_sentences(event["text"]):
-            entity = match_sentence_to_index(embedder.embed(sentence), index, threshold)
+        tag, body = parse_lead_tag(event["text"])
+        sentences = split_sentences(body)
+        if tag is not None:
+            target = index.by_id.get(tag)
+            if target is None:
+                unmatched.extend(sentences)  # LLM agent creates the entity
+                continue
+            for sentence in sentences:
+                matched.append((sentence, target))
+            if sentences:
+                matched_event_ids.add(event["id"])
+            continue
+
+        for sentence in sentences:
+            entity = (
+                match_sentence_to_index(embedder.embed(sentence), index, threshold)
+                if match_untagged
+                else None
+            )
             if entity is not None:
                 matched.append((sentence, entity))
                 matched_event_ids.add(event["id"])
@@ -222,8 +287,9 @@ def extract_events(
     embedder: EmbedderLike,
     now: datetime | None = None,
     threshold: float = MATCH_THRESHOLD,
+    match_untagged: bool = False,
 ) -> ExtractionResult:
-    """Process a list of events, matching sentences to existing entities.
+    """Process a list of events, routing sentences to existing entities.
 
     Builds the entity index once (``build_entity_index``) then matches, so
     embedding calls scale as ``total_facts + total_sentences`` rather than
@@ -235,12 +301,14 @@ def extract_events(
         embedder: embedding model
         now: current time (accepted for caller compatibility; matching itself
             is time-independent)
-        threshold: cosine gate for a sentence→entity match
+        threshold: cosine gate for a sentence→entity match (untagged only)
+        match_untagged: cosine-match untagged events (off by default, #33)
 
     Returns:
         ExtractionResult with matched/unmatched sentences
     """
-    index = build_entity_index(entities, embedder)
+    index = build_entity_index(entities, embedder, embed_facts=match_untagged)
     return extract_events_with_index(
-        events, index, embedder, now=now, threshold=threshold
+        events, index, embedder, now=now, threshold=threshold,
+        match_untagged=match_untagged,
     )

@@ -272,8 +272,16 @@ def memory_extract(
     process_all: bool = False,
     batch_size: int = DEFAULT_BATCH_SIZE,
     threshold: float = MATCH_THRESHOLD,
+    match_untagged: bool = False,
 ) -> dict[str, Any]:
     """Process unextracted events into entity upserts within a domain.
+
+    Routing: an event opening with a ``[type:id]`` tag attaches to that entity
+    when it exists; if it doesn't, the event stays unextracted for creation via
+    memory_store. Untagged events stay unextracted too unless
+    ``match_untagged=True`` opts in to cosine matching — off by default because
+    it misattributed most facts in practice (issue #33). Tag your memory_event
+    text with its subject so it routes deterministically.
 
     Events are processed in batches (batch_size); each batch upserts its
     enriched entities and marks ONLY its matched events extracted before the
@@ -284,9 +292,8 @@ def memory_extract(
     extracted because >=1 matched, so its unmatched sentences are not separately
     surfaced. Acceptable for now.)
 
-    ``threshold`` is the cosine gate for a sentence→fact match (default: the
-    tuned MATCH_THRESHOLD). Lower it to enrich more aggressively at the risk of
-    attaching facts to a near-but-wrong neighbour.
+    ``threshold`` is the cosine gate for a sentence→fact match, used only with
+    ``match_untagged`` (default: the tuned MATCH_THRESHOLD).
     """
     _validate_domain(domain)
     client = get_client()
@@ -298,7 +305,7 @@ def memory_extract(
 
     return run_extraction(
         client, embedder, domain=domain, since=since_dt,
-        batch_size=batch_size, threshold=threshold,
+        batch_size=batch_size, threshold=threshold, match_untagged=match_untagged,
     )
 
 

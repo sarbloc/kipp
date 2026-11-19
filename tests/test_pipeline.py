@@ -90,7 +90,9 @@ def test_burn_fix_holds_with_batching(store, embedder):
 
     unmatched_id = _seed_event(store, embedder, "grok quaffle.")  # distinct → no match at 0.95
 
-    summary = run_extraction(store, embedder, batch_size=1, threshold=0.95)
+    summary = run_extraction(
+        store, embedder, batch_size=1, threshold=0.95, match_untagged=True,
+    )
 
     assert summary["events_processed"] == 2
     assert summary["matched_events"] == 1
@@ -135,7 +137,9 @@ def test_per_batch_commit_survives_midrun_failure(store, embedder):
             raise RuntimeError("simulated crash mid-run")
 
     with pytest.raises(RuntimeError):
-        run_extraction(store, embedder, batch_size=1, progress=boom)
+        run_extraction(
+            store, embedder, batch_size=1, progress=boom, match_untagged=True,
+        )
 
     # Two batches committed (marked extracted) before the crash; two survive.
     remaining = get_unextracted_events(store)
@@ -164,3 +168,22 @@ def test_domain_isolation(store, embedder):
     assert summary["events_processed"] == 0
     # dev event untouched by the shared run.
     assert dev_id in {e["id"] for e in get_unextracted_events(store, domain="dev")}
+
+
+def test_tagged_event_enriches_target_without_cosine(store, embedder):
+    """Default run: tagged event lands on its entity, tag stripped (#33)."""
+    from entity_memory.client import get_entity
+
+    _seed_entity(store, embedder, "person:alice", "person", ["Manages the auth team"])
+    tagged = _seed_event(store, embedder, "[person:alice] Moved to Berlin in March.")
+    missing = _seed_event(store, embedder, "[person:carol] Joined the payments team.")
+    untagged = _seed_event(store, embedder, "Somebody moved somewhere.")
+
+    summary = run_extraction(store, embedder)
+
+    assert summary["matched_events"] == 1
+    remaining = {e["id"] for e in get_unextracted_events(store)}
+    assert tagged not in remaining
+    assert {missing, untagged} <= remaining  # left for the LLM agent
+    facts = [f.text for f in get_entity(store, "person:alice").facts]
+    assert "Moved to Berlin in March." in facts

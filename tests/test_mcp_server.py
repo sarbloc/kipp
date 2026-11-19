@@ -94,7 +94,7 @@ class TestMemoryExtractBurnFix:
         unmatched_id = _seed_event(client, embedder, "grok quaffle.")
 
         result = mcp_server.memory_extract(
-            domain="shared", process_all=True, threshold=0.95
+            domain="shared", process_all=True, threshold=0.95, match_untagged=True,
         )
 
         assert result["events_processed"] == 2

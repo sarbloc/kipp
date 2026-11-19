@@ -82,7 +82,7 @@ The CLI surface is unchanged: existing commands default to `domain="shared"` via
 
 - **Merge:** New facts compared by cosine similarity. >= 0.9 = duplicate (increment hit_count, keep longer text). < 0.9 = new fact appended.
 - **Compaction:** Triggered when facts > 20. Score = `frequency × recency × permanence`. Keep top 20.
-- **Extraction:** Events split into sentences, matched against existing entities (cosine > 0.7). Unmatched sentences logged but NOT auto-created as entities.
+- **Extraction:** An event opening with a `[type:id]` tag routes all its sentences to that entity if it exists; otherwise it stays unextracted for the LLM agent to create. Untagged events are cosine-matched (per fact, 0.32) only with `match_untagged` / `--match-untagged` — off by default because it misattributed most facts (#33). Nothing is auto-created as an entity.
 
 ### Constants
 
