@@ -1,6 +1,7 @@
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    # Pinned: bump deliberately, after a backup (kipp backup).
+    image: qdrant/qdrant:v1.20.0
     container_name: kipp-qdrant
     restart: unless-stopped
     ports:
@@ -9,12 +10,20 @@ services:
     volumes:
       - qdrant_data:/qdrant/storage
     environment:
-      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+      # Empty (the default) leaves Qdrant unauthenticated; it is bound to
+      # localhost above. Set QDRANT_API_KEY to require a key.
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY:-}
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      # The image ships bash but not curl or wget. /healthz needs no API key.
+      test:
+        - CMD
+        - bash
+        - -c
+        - exec 3<>/dev/tcp/127.0.0.1/6333 && printf 'GET /healthz HTTP/1.0\r\n\r\n' >&3 && grep -q ' 200 ' <&3
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
 volumes:
   qdrant_data:
