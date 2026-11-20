@@ -13,6 +13,7 @@ the move without doubling it.
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -23,6 +24,7 @@ from qdrant_client import QdrantClient
 
 from kipp.client import get_entity
 from kipp.facts import write_entity
+from kipp.merge import longer_lifetime
 from kipp.models import Entity, Fact
 
 FACTS_PER_GROUP = 12   # default group count is current facts / this
@@ -30,6 +32,7 @@ MIN_GROUPS = 2
 MAX_GROUPS = 12
 MIN_GROUP_SIZE = 3     # smaller groups stay on the source, in ``keep``
 KEYWORDS_PER_GROUP = 3
+MOVE_ATTEMPTS = 5      # target rewrites while the source keeps changing under a move
 
 _WORD = re.compile(r"[a-z0-9][a-z0-9'+.-]*[a-z0-9]|[a-z0-9]")
 _SLUG = re.compile(r"[^a-z0-9]+")
@@ -42,6 +45,9 @@ _STOPWORDS = frozenset(
     "using one two three more most less very just only been being does did doing "
     "out off yes now new old get got set like well".split()
 )
+
+
+log = logging.getLogger(__name__)
 
 
 class EmbedderLike(Protocol):
@@ -134,8 +140,13 @@ def move_facts(
 
     Order of writes: the target first, then the source re-read and written
     without the moved facts. A crash between them leaves the facts on both.
-    Running the move again finds them already on the target, skips the copy
-    (keeping the higher hit count) and finishes removing them from the source.
+    Running the move again finds them already on the target, merges each
+    pair (higher hit count, longer lifetime) and finishes removing them from
+    the source.
+
+    If the re-read shows the selection changed meanwhile (a concurrent store
+    superseded a selected fact, say), the target is rewritten from the new
+    selection before the source is touched, so it never keeps a stale copy.
 
     With ``apply=False`` nothing is written; the result says what would move.
     """
@@ -151,29 +162,45 @@ def move_facts(
     result = MoveResult(source=source_id, target=target_id, created=target is None)
     if target is None:
         target = Entity(id=target_id, type=target_type, parent=source_id)
+    base = list(target.facts)  # the target's own facts, before this move
 
     facts, matched, carried = select_facts(source, texts)
-    on_target = {f.text for f in target.facts}
+    on_target = {f.text for f in base}
     wanted = list(dict.fromkeys(texts))
     result.moved = [t for t in wanted if t in matched]
     result.already = [t for t in wanted if t not in matched and t in on_target]
     result.unmatched = [t for t in wanted if t not in matched and t not in on_target]
     result.carried = carried
 
-    gone = {fact_key(f) for f in facts}
-    _land(target, facts)
     if not apply or not facts:
-        result.source_facts = _current(source, without=gone)
+        _land(target, facts)
+        result.source_facts = _current(source, without={fact_key(f) for f in facts})
         result.target_facts = _current(target)
         return result
 
-    target.last_updated = now.isoformat()
-    write_entity(client, target, embedder, domain=domain, now=now)
+    fresh: Entity | None = source
+    for _ in range(MOVE_ATTEMPTS):
+        target.facts = [replace(f) for f in base]
+        _land(target, facts)
+        target.last_updated = now.isoformat()
+        write_entity(client, target, embedder, domain=domain, now=now)
+        # Re-read so a write that landed since the first read isn't clobbered.
+        fresh = get_entity(client, source_id, domain=domain)
+        if fresh is None:
+            break  # deleted meanwhile: the facts are safe on the target; don't resurrect it
+        again, _, _ = select_facts(fresh, texts)
+        if again == facts:
+            break
+        facts = again
+    else:
+        log.warning(
+            "move %s -> %s (%s): the source changed on each of %d attempts; facts "
+            "that changed last stay on the source", source_id, target_id, domain, MOVE_ATTEMPTS,
+        )
 
-    # Re-read so a write that landed since the first read isn't clobbered.
-    # Deleted meanwhile: the facts are safe on the target; don't resurrect it.
-    fresh = get_entity(client, source_id, domain=domain)
     if fresh is not None:
+        # Remove exactly what the target now holds, by identity.
+        gone = {fact_key(f) for f in facts}
         fresh.facts = [f for f in fresh.facts if fact_key(f) not in gone]
         fresh.last_updated = now.isoformat()
         write_entity(client, fresh, embedder, domain=domain, now=now)
@@ -184,18 +211,29 @@ def move_facts(
 
 
 def _land(target: Entity, facts: list[Fact]) -> None:
-    """Append ``facts`` to ``target``, skipping ones it already holds."""
-    held = {fact_key(f): f for f in target.facts}
+    """Append ``facts`` to ``target``, merging any it already holds.
+
+    A fact already on the target with the same identity was left there by an
+    interrupted move (or filed twice). The pair becomes one fact keeping the
+    stronger of each field, so no lifetime, validity or hit is lost.
+    """
+    held = {fact_key(f): i for i, f in enumerate(target.facts)}
     for fact in facts:
-        twin = held.get(fact_key(fact))
-        if twin is None:
-            copy = replace(fact, embedding=None)
-            target.facts.append(copy)
-            held[fact_key(copy)] = copy
+        i = held.get(fact_key(fact))
+        if i is None:
+            held[fact_key(fact)] = len(target.facts)
+            target.facts.append(replace(fact, embedding=None))
             continue
-        # Left by an interrupted move: keep the stronger signal of the two.
-        twin.hit_count = max(twin.hit_count, fact.hit_count)
-        twin.last_seen = max(filter(None, [twin.last_seen, fact.last_seen]), default=None)
+        twin = target.facts[i]
+        target.facts[i] = replace(
+            twin,
+            added=min(twin.added, fact.added),
+            last_seen=max(filter(None, [twin.last_seen, fact.last_seen]), default=None),
+            hit_count=max(twin.hit_count, fact.hit_count),
+            expires=longer_lifetime(twin.expires, fact.expires),
+            superseded_by=twin.superseded_by or fact.superseded_by,
+            embedding=None,
+        )
 
 
 def _current(entity: Entity, without: set | frozenset = frozenset()) -> int:

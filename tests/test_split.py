@@ -16,6 +16,7 @@ from kipp.client import collection_name, delete_entity, ensure_collections, get_
 from kipp.embedder import MockEmbedder
 from kipp.export import export_json, import_json
 from kipp.facts import write_entity
+from kipp.merge import mark_superseded
 from kipp.models import Entity, Fact
 from kipp.split import (
     apply_plan,
@@ -186,6 +187,70 @@ def test_crash_after_target_write_loses_nothing_and_rerun_finishes(client, emb, 
     assert _texts(target) == ["Runs 5k three times a week."]
     assert target.facts[0].hit_count == 9
     assert "Runs 5k three times a week." not in _texts(get_entity(client, "person:alice", domain="personal"))
+
+
+def test_landing_on_an_identical_fact_keeps_the_stronger_fields(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Allergic to penicillin.", added="2025-01-01", hit_count=2, last_seen="2026-01-01"),
+    ]))
+    _seed(client, emb, Entity(id="person:alice-health", type="person", facts=[
+        _fact("Allergic to penicillin.", added="2026-10-01", hit_count=5, last_seen="2025-06-01",
+              expires="2026-12-01"),
+    ]))
+
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW)
+
+    [fact] = get_entity(client, "person:alice-health", domain="personal").facts
+    assert (fact.added, fact.last_seen, fact.hit_count, fact.expires) == (
+        "2025-01-01", "2026-01-01", 5, None,
+    )
+
+
+def test_fact_superseded_mid_move_lands_superseded(client, emb, monkeypatch):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
+    real = split_mod.write_entity
+    raced = []
+
+    def racing_supersede(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-work" and not raced:
+            raced.append(True)
+            fresh = get_entity(client, "person:alice", domain="personal")
+            mark_superseded(fresh, "Works at Initech.", by="Works at Acme.", on_date="2026-11-20")
+            fresh.facts.append(_fact("Works at Acme."))
+            real(client_, fresh, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", racing_supersede)
+    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+               domain="personal", now=NOW)
+
+    [moved] = get_entity(client, "person:alice-work", domain="personal").facts
+    assert (moved.text, moved.superseded_at) == ("Works at Initech.", "2026-11-20")
+    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Works at Acme."]
+    points, _ = client.scroll(collection_name("personal", "facts"), limit=100, with_payload=True)
+    current = {(p.payload["entity_id"], p.payload["text"]) for p in points if p.payload["current"]}
+    assert current == {("person:alice", "Works at Acme.")}
+
+
+def test_move_gives_up_after_bounded_attempts_without_losing(client, emb, monkeypatch, caplog):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Counter.", hit_count=1)]))
+    real = split_mod.write_entity
+
+    def always_bump(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-x":
+            fresh = get_entity(client, "person:alice", domain="personal")
+            fresh.facts[0].hit_count += 1
+            real(client_, fresh, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", always_bump)
+    move_facts(client, emb, "person:alice", "person:alice-x", ["Counter."], domain="personal", now=NOW)
+
+    assert "changed on each of 5 attempts" in caplog.text
+    # Same identity, so it left the source and the target holds it.
+    assert get_entity(client, "person:alice", domain="personal").facts == []
+    assert _texts(get_entity(client, "person:alice-x", domain="personal")) == ["Counter."]
 
 
 def test_existing_target_keeps_parent_and_facts_are_not_merged(client, emb):
