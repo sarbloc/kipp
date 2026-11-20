@@ -129,8 +129,10 @@ def test_move_creates_target_with_parent_and_keeps_fact_fields(client, emb):
 def test_superseded_history_follows_its_replacement(client, emb):
     alice = _alice()
     alice.facts += [
-        _fact("Runs 3k twice a week.", superseded_at="2026-06-01", superseded_by="Runs 4k weekly."),
-        _fact("Runs 4k weekly.", superseded_at="2026-09-01", superseded_by="Runs 5k three times a week."),
+        _fact("Runs 3k twice a week.", added="2026-01-01", superseded_at="2026-06-01",
+              superseded_by="Runs 4k weekly."),
+        _fact("Runs 4k weekly.", added="2026-06-01", superseded_at="2026-10-01",
+              superseded_by="Runs 5k three times a week."),
         _fact("Lived in Leeds.", superseded_at="2025-01-01", superseded_by="Lives in London."),
     ]
     _seed(client, emb, alice)
@@ -229,16 +231,16 @@ def test_same_text_filed_separately_on_the_target_stays_separate(client, emb):
 def test_histories_ending_on_different_dates_stay_separate(client, emb):
     old = dict(added="2020-01-01", superseded_by="Lives in Leeds.")
     _seed(client, emb, Entity(id="person:alice", type="person", facts=[
-        _fact("Lives in Leeds."), _fact("Lives in York.", superseded_at="2026-09-01", **old),
+        _fact("Lives in Leeds."), _fact("Lives in York.", superseded_at="2026-10-05", **old),
     ]))
     _seed(client, emb, Entity(id="person:alice-home", type="person", facts=[
-        _fact("Lives in York.", superseded_at="2026-06-01", **old),
+        _fact("Lives in York.", superseded_at="2026-10-02", **old),
     ]))
 
     move_facts(client, emb, "person:alice", "person:alice-home", ["Lives in Leeds."], domain="personal", now=NOW)
 
     target = get_entity(client, "person:alice-home", domain="personal")
-    assert sorted(f.superseded_at or "" for f in target.facts) == ["", "2026-06-01", "2026-09-01"]
+    assert sorted(f.superseded_at or "" for f in target.facts) == ["", "2026-10-02", "2026-10-05"]
 
 
 def test_fact_superseded_mid_move_lands_superseded(client, emb, monkeypatch):
@@ -298,7 +300,7 @@ def test_history_arriving_after_the_last_target_write_stays_on_source(client, em
         if entity.id == "person:alice-home":
             fresh = get_entity(client, "person:alice", domain="personal")
             added.append(f"Lived in place {len(added)}.")
-            fresh.facts.append(_fact(added[-1], superseded_at="2026-01-01", superseded_by="Lives in York."))
+            fresh.facts.append(_fact(added[-1], superseded_at="2026-10-15", superseded_by="Lives in York."))
             real(client_, fresh, emb, domain="personal", now=NOW)
 
     monkeypatch.setattr(split_mod, "write_entity", add_history)
@@ -750,7 +752,7 @@ def test_dry_run_rerun_writes_nothing(client, emb, monkeypatch):
     _seed(client, emb, _alice())
     move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
                domain="personal", now=NOW)
-    monkeypatch.setattr(split_mod, "sync_fact_points", lambda *a, **k: pytest.fail("dry run wrote"))
+    monkeypatch.setattr(split_mod, "sync_until_stable", lambda *a, **k: pytest.fail("dry run wrote"))
     monkeypatch.setattr(split_mod, "write_entity", lambda *a, **k: pytest.fail("dry run wrote"))
     move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
                domain="personal", now=NOW, apply=False)
@@ -759,13 +761,105 @@ def test_dry_run_rerun_writes_nothing(client, emb, monkeypatch):
 def test_move_lock_is_exclusive_per_domain(tmp_path, monkeypatch):
     import fcntl
 
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/elsewhere")  # ignored: one path for every process
+    lock = tmp_path / ".cache" / "kipp" / "move-personal.lock"
     with split_mod.move_lock("personal"):
-        with open(tmp_path / "kipp-move-personal.lock", "a") as other:
+        with open(lock, "a") as other:
             with pytest.raises(BlockingIOError):
                 fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
         with split_mod.move_lock("dev"):
             pass
-    with open(tmp_path / "kipp-move-personal.lock", "a") as other:
+    with open(lock, "a") as other:
         fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
+
+
+def test_histories_naming_different_replacements_stay_separate(client, emb):
+    old = dict(added="2020-01-01", superseded_at="2026-10-01")
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Lives in Leeds."), _fact("Lives in York.", superseded_by="Lives in Leeds.", **old),
+    ]))
+    _seed(client, emb, Entity(id="person:alice-home", type="person", facts=[
+        _fact("Lives in York.", superseded_by="Lives in Hull.", **old),
+    ]))
+
+    move_facts(client, emb, "person:alice", "person:alice-home", ["Lives in Leeds."], domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-home", domain="personal")
+    assert sorted(f.superseded_by or "" for f in target.facts) == ["", "Lives in Hull.", "Lives in Leeds."]
+
+
+def _os_history():
+    return Entity(id="person:alice", type="person", facts=[
+        _fact("Uses Windows.", added="2018-01-01", superseded_at="2020-01-01", superseded_by="Uses Linux."),
+        _fact("Uses Linux.", added="2020-01-01", superseded_at="2023-01-01", superseded_by="Uses macOS."),
+        _fact("Uses macOS.", added="2023-01-01"),
+        _fact("Uses Linux.", added="2026-01-01"),
+    ])
+
+
+def test_history_follows_the_occurrence_it_was_replaced_by(client, emb):
+    _seed(client, emb, _os_history())
+
+    move_facts(client, emb, "person:alice", "person:alice-linux", ["Uses Linux."], domain="personal", now=NOW)
+    move_facts(client, emb, "person:alice", "person:alice-mac", ["Uses macOS."], domain="personal", now=NOW)
+
+    linux = get_entity(client, "person:alice-linux", domain="personal")
+    mac = get_entity(client, "person:alice-mac", domain="personal")
+    assert [f.added for f in linux.facts] == ["2026-01-01"]
+    assert sorted(f.text for f in mac.facts) == ["Uses Linux.", "Uses Windows.", "Uses macOS."]
+    assert get_entity(client, "person:alice", domain="personal").facts == []
+
+
+def test_rerunning_a_plan_does_not_pull_history_into_a_finished_group(client, emb):
+    _seed(client, emb, _os_history())
+    plan = {"source": "person:alice", "domain": "personal", "groups": [
+        {"target": "person:alice-linux", "facts": ["Uses Linux."]},
+        {"target": "person:alice-mac", "facts": ["Uses macOS."]},
+    ], "keep": []}
+    apply_plan(client, emb, {**plan, "groups": plan["groups"][:1]}, now=NOW, apply=True)  # interrupted
+
+    results = apply_plan(client, emb, plan, now=NOW, apply=True)
+
+    assert results[0].already == ["Uses Linux."]
+    linux = get_entity(client, "person:alice-linux", domain="personal")
+    assert [f.added for f in linux.facts] == ["2026-01-01"]
+    assert len(get_entity(client, "person:alice-mac", domain="personal").facts) == 3
+
+
+def test_plan_filing_history_apart_from_its_replacement_is_rejected(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Lived in York.", added="2020-01-01", superseded_at="2026-10-01", superseded_by="Lives in Leeds."),
+        _fact("Lives in Leeds."),
+    ]))
+    plan = {"source": "person:alice", "domain": "personal",
+            "groups": [{"target": "person:alice-home", "facts": ["Lives in Leeds."]}],
+            "keep": ["Lived in York."]}
+
+    with pytest.raises(ValueError, match="moves with its replacement"):
+        apply_plan(client, emb, plan, now=NOW)
+    assert get_entity(client, "person:alice-home", domain="personal") is None
+
+
+@pytest.mark.parametrize("clobber", ["stale write", "delete"])
+def test_facts_knocked_off_the_target_stay_on_the_source(client, emb, monkeypatch, caplog, clobber):
+    _seed(client, emb, _alice())
+    _seed(client, emb, Entity(id="person:alice-health", type="person", facts=[_fact("Has a knee brace.")]))
+    stale = get_entity(client, "person:alice-health", domain="personal")
+    real = split_mod.write_entity
+
+    def racing_store(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-health":
+            if clobber == "delete":
+                delete_entity(client, "person:alice-health", domain="personal")
+            else:
+                real(client_, stale, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", racing_store)
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW)
+
+    assert "no longer on the target" in caplog.text
+    assert "Allergic to penicillin." in _texts(get_entity(client, "person:alice", domain="personal"))

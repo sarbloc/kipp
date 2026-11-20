@@ -265,3 +265,15 @@ def test_permanent_moved_fact_keeps_dupe_alive(client, emb):
     (fact,) = get_entity(client, "person:alice", domain="dev").facts
     assert fact.expires is None
 
+
+
+def test_plan_leaves_facts_split_into_a_topic_child():
+    alice = Entity(id="person:alice", type="person", facts=[])
+    knee = Entity(id="person:alice-knee", type="person", parent="person:alice",
+                  facts=[_fact("[person:alice] Hurt her knee.")])
+    physio = Entity(id="person:alice-physio", type="person", parent="person:alice-knee",
+                    facts=[_fact("[person:alice] Sees a physio.")])
+
+    plan = plan_repair([alice, knee, physio])
+
+    assert plan.moves == []

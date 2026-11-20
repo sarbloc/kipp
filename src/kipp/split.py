@@ -17,9 +17,7 @@ from __future__ import annotations
 
 import fcntl
 import logging
-import os
 import re
-import tempfile
 from collections import Counter, defaultdict
 from contextlib import contextmanager
 from dataclasses import astuple, dataclass, field, replace
@@ -31,7 +29,7 @@ import numpy as np
 from qdrant_client import QdrantClient
 
 from kipp.client import get_entity
-from kipp.facts import sync_fact_points, write_entity
+from kipp.facts import sync_until_stable, write_entity
 from kipp.merge import longer_lifetime
 from kipp.models import Entity, Fact
 
@@ -101,15 +99,16 @@ def check_parent(client: QdrantClient, entity_id: str, parent: str, *, domain: s
         raise ValueError(f"parent {parent} not found in domain {domain!r}")
 
 
-def select_facts(source: Entity, texts: list[str]) -> tuple[list[Fact], set[str], int]:
+def select_facts(
+    source: Entity, texts: list[str], *, history: bool = True,
+) -> tuple[list[Fact], set[str], int]:
     """Facts of ``source`` that a move of ``texts`` takes along.
 
-    A requested text selects the current facts with that text, or, if none
-    is current, its superseded ones (so history can be moved on its own).
-    Then, until nothing changes, superseded facts whose ``superseded_by``
-    names a selected fact's text follow it, so history goes where its
-    replacement goes. An old occurrence of a reasserted text therefore
-    follows its own replacement, whichever group moves first.
+    A requested text selects the current facts with that text. If none is
+    current and ``history`` is set, it selects the superseded ones instead,
+    so history can be moved on its own. Then, until nothing changes, each
+    superseded fact follows its replacement (see ``_replacement``) if that
+    was selected, so history goes where its replacement goes.
 
     Known gap (#26): ``superseded_by`` records the replacement text as
     stored, and a later merge can lengthen the surviving fact's wording;
@@ -122,21 +121,37 @@ def select_facts(source: Entity, texts: list[str]) -> tuple[list[Fact], set[str]
     live = {f.text for f in source.facts if f.is_current and f.text in requested}
     picked = {
         i for i, f in enumerate(source.facts)
-        if f.text in requested and (f.is_current or f.text not in live)
+        if f.text in requested and (f.is_current or (history and f.text not in live))
     }
     matched = {source.facts[i].text for i in picked}
     direct = len(picked)
+    replaced_by = {i: _replacement(source.facts, i) for i, f in enumerate(source.facts)
+                   if not f.is_current}
     while True:
-        names = {source.facts[i].text for i in picked}
-        more = {
-            i for i, f in enumerate(source.facts)
-            if i not in picked and not f.is_current and f.superseded_by in names
-        }
+        more = {i for i, r in replaced_by.items() if i not in picked and r in picked}
         if not more:
             break
         picked |= more
     facts = [f for i, f in enumerate(source.facts) if i in picked]
     return facts, matched, len(picked) - direct
+
+
+def _replacement(facts: list[Fact], i: int) -> int | None:
+    """Index of the fact that superseded ``facts[i]``, if it's still there.
+
+    ``superseded_by`` is a text, and a text can recur (Linux, then macOS,
+    then Linux again). The replacement is the latest occurrence of that text
+    recorded on or before the supersession date; a later reassertion isn't
+    it. None when no occurrence qualifies: that history stays put.
+    """
+    fact = facts[i]
+    day = (fact.superseded_at or "")[:10]
+    best = None
+    for j, f in enumerate(facts):
+        if j != i and f.text == fact.superseded_by and f.added[:10] <= day:
+            if best is None or f.added[:10] >= facts[best].added[:10]:
+                best = j
+    return best
 
 
 @contextmanager
@@ -148,8 +163,11 @@ def move_lock(domain: str):
     (``memory_store``) don't take this lock: like every KIPP write, a store
     racing a move is last-writer-wins on that entity.
     """
-    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-    path = Path(base) / f"kipp-move-{domain}.lock"
+    # One fixed place, so a CLI and an MCP server started with different
+    # environments still share it.
+    base = Path.home() / ".cache" / "kipp"
+    base.mkdir(parents=True, exist_ok=True)
+    path = base / f"move-{domain}.lock"
     with open(path, "a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
@@ -168,10 +186,12 @@ def move_facts(
     domain: str,
     now: datetime,
     apply: bool = True,
+    history: bool = True,
 ) -> MoveResult:
     """Move the facts of ``source_id`` whose text is in ``texts`` to ``target_id``.
 
-    Texts match exactly; see ``select_facts`` for which facts a text takes.
+    Texts match exactly; see ``select_facts`` for which facts a text takes
+    (``history=False``: only current facts, as a split plan lists them).
     Each fact moves unchanged: same timestamps, provenance and hit count, no
     similarity merge on landing. A target that doesn't exist is created with
     the type from its id prefix and ``parent=source_id``; an existing target
@@ -188,7 +208,8 @@ def move_facts(
     If the re-read shows the selection changed meanwhile (a concurrent store
     superseded a selected fact, say), the copies this call wrote are taken
     back off the target and the new selection written, before the source is
-    touched.
+    touched. Before the source write, the target is re-read: a fact a
+    concurrent write knocked off it stays on the source.
 
     With ``apply=False`` nothing is written; the result says what would move.
     """
@@ -198,15 +219,16 @@ def move_facts(
         raise ValueError("source and target are the same entity")
     if not apply:
         return _move(client, embedder, source_id, target_id, target_type, texts,
-                     domain=domain, now=now, apply=False)
+                     domain=domain, now=now, apply=False, history=history)
     with move_lock(domain):
         return _move(client, embedder, source_id, target_id, target_type, texts,
-                     domain=domain, now=now, apply=True)
+                     domain=domain, now=now, apply=True, history=history)
 
 
 def _move(
     client: QdrantClient, embedder: EmbedderLike, source_id: str, target_id: str,
     target_type: str, texts: list[str], *, domain: str, now: datetime, apply: bool,
+    history: bool,
 ) -> MoveResult:
     source = get_entity(client, source_id, domain=domain)
     if source is None:
@@ -216,7 +238,7 @@ def _move(
     if target is None:
         target = Entity(id=target_id, type=target_type, parent=source_id)
 
-    facts, matched, carried = select_facts(source, texts)
+    facts, matched, carried = select_facts(source, texts, history=history)
     on_target = {f.text for f in target.facts}
     wanted = list(dict.fromkeys(texts))
     result.moved = [t for t in wanted if t in matched]
@@ -228,9 +250,9 @@ def _move(
         if apply:
             # Nothing left to move, but a crash inside the last source write
             # can have left its search points stale: repair both indexes.
-            sync_fact_points(client, source, embedder, domain=domain)
+            sync_until_stable(client, source, embedder, domain=domain)
             if not result.created:
-                sync_fact_points(client, target, embedder, domain=domain)
+                sync_until_stable(client, target, embedder, domain=domain)
         _land(target, facts)
         result.source_facts = _current(source, without={fact_key(f) for f in facts})
         result.target_facts = _current(target)
@@ -256,7 +278,7 @@ def _move(
         fresh = get_entity(client, source_id, domain=domain)
         if fresh is None:
             break  # deleted meanwhile: the facts are safe on the target; don't resurrect it
-        again, _, _ = select_facts(fresh, texts)
+        again, _, _ = select_facts(fresh, texts, history=history)
         if again == facts:
             break
         facts = again
@@ -267,11 +289,19 @@ def _move(
         )
 
     if fresh is not None:
-        # Remove only facts exactly as the target received them. One changed
-        # since (only possible once attempts run out) stays on both.
-        fresh.facts = _without(fresh.facts, landed)
-        fresh.last_updated = now.isoformat()
-        write_entity(client, fresh, embedder, domain=domain, now=now)
+        # Remove only facts exactly as the target received them, and only
+        # those still on it. One changed since stays on both.
+        safe = _still_on(get_entity(client, target_id, domain=domain), landed)
+        if len(safe) < len(landed):
+            log.warning(
+                "move %s -> %s (%s): %d of %d facts were no longer on the target "
+                "after writing it; they stay on the source", source_id, target_id,
+                domain, len(landed) - len(safe), len(landed),
+            )
+        if safe:
+            fresh.facts = _without(fresh.facts, safe)
+            fresh.last_updated = now.isoformat()
+            write_entity(client, fresh, embedder, domain=domain, now=now)
 
     result.source_facts = _current(fresh) if fresh is not None else 0
     result.target_facts = _current(target)
@@ -297,7 +327,19 @@ def _without(facts: list[Fact], remove: list[Fact]) -> list[Fact]:
 
 def _copy_key(fact: Fact) -> tuple:
     """Fields a moved copy shares with its original until either is changed."""
-    return (fact.text, fact.valid_from, fact.superseded_at, fact.added, fact.source)
+    return (fact.text, fact.valid_from, fact.superseded_at, fact.superseded_by,
+            fact.added, fact.source)
+
+
+def _still_on(target: Entity | None, facts: list[Fact]) -> list[Fact]:
+    """The ``facts`` that ``target`` holds a copy of, one copy each."""
+    have = Counter(_copy_key(f) for f in target.facts) if target else Counter()
+    kept = []
+    for f in facts:
+        if have[_copy_key(f)] > 0:
+            have[_copy_key(f)] -= 1
+            kept.append(f)
+    return kept
 
 
 def _land(target: Entity, facts: list[Fact]) -> list[Fact]:
@@ -508,13 +550,48 @@ def apply_plan(
     """Move each group of ``plan``, in order. Dry run unless ``apply``.
 
     Groups are independent moves, so an interrupted run can be re-run as is:
-    finished groups report their facts as ``already`` moved.
+    finished groups report their facts as ``already`` moved. A plan lists
+    current facts, so a text with no current fact left moves nothing (it
+    doesn't fall back to that text's history).
     """
     validate_plan(plan)
+    source = get_entity(client, plan["source"], domain=plan["domain"])
+    if source is not None:
+        targets = {g["target"]: get_entity(client, g["target"], domain=plan["domain"])
+                   for g in plan["groups"]}
+        check_carried(plan, source, targets)
     return [
         move_facts(
             client, embedder, plan["source"], g["target"], g.get("facts", []),
-            domain=plan["domain"], now=now, apply=apply,
+            domain=plan["domain"], now=now, apply=apply, history=False,
         )
         for g in plan["groups"]
     ]
+
+
+def check_carried(plan: dict, source: Entity, targets: dict[str, Entity | None]) -> None:
+    """Reject a plan that files history somewhere other than where it would go.
+
+    History moves with its replacement. If a text with only history left on
+    the source is also listed in ``keep``, or in another group whose target
+    doesn't already hold it as current (a group finished on an earlier run
+    does), the plan says two things: raise rather than pick one.
+    """
+    current = {f.text for f in source.facts if f.is_current}
+    done = {
+        (t, f.text) for t, e in targets.items() if e is not None
+        for f in e.facts if f.is_current
+    }
+    listed = {t: "keep" for t in plan.get("keep", [])}
+    for g in plan["groups"]:
+        listed.update({t: g["target"] for t in g.get("facts", [])})
+    for g in plan["groups"]:
+        facts, _, _ = select_facts(source, g.get("facts", []), history=False)
+        for f in facts:
+            where = listed.get(f.text, g["target"])
+            if f.text in current or where == g["target"] or (where, f.text) in done:
+                continue
+            raise ValueError(
+                f"history {f.text[:80]!r} is listed in {where} but moves with "
+                f"its replacement to {g['target']}; list it there or drop it",
+            )
