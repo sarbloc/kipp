@@ -248,9 +248,10 @@ def test_move_gives_up_after_bounded_attempts_without_losing(client, emb, monkey
     move_facts(client, emb, "person:alice", "person:alice-x", ["Counter."], domain="personal", now=NOW)
 
     assert "changed on each of 5 attempts" in caplog.text
-    # Same identity, so it left the source and the target holds it.
-    assert get_entity(client, "person:alice", domain="personal").facts == []
-    assert _texts(get_entity(client, "person:alice-x", domain="personal")) == ["Counter."]
+    # The last bump never reached the target, so that copy stays on the source.
+    [left] = get_entity(client, "person:alice", domain="personal").facts
+    [landed] = get_entity(client, "person:alice-x", domain="personal").facts
+    assert (left.text, left.hit_count, landed.hit_count) == ("Counter.", 6, 5)
 
 
 def test_history_arriving_after_the_last_target_write_stays_on_source(client, emb, monkeypatch, caplog):
@@ -388,6 +389,32 @@ def test_identical_facts_on_the_source_both_move(client, emb):
     ]))
     move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
     assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 3
+
+
+def test_resuming_with_three_identical_copies_is_idempotent(client, emb, monkeypatch):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Said hello.")] * 3))
+    real = split_mod.write_entity
+
+    def crash_on_source(client_, entity, *a, **kw):
+        if entity.id == "person:alice":
+            raise RuntimeError("killed")
+        real(client_, entity, *a, **kw)
+
+    monkeypatch.setattr(split_mod, "write_entity", crash_on_source)
+    with pytest.raises(RuntimeError):
+        move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+    monkeypatch.setattr(split_mod, "write_entity", real)
+    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+
+    assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 3
+    assert get_entity(client, "person:alice", domain="personal").facts == []
+
+
+def test_each_target_fact_absorbs_one_incoming_copy(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Said hello."), _fact("Said hello.")]))
+    _seed(client, emb, Entity(id="person:alice-x", type="person", facts=[_fact("Said hello.")]))
+    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+    assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 2
 
 
 def test_existing_target_keeps_parent_and_facts_are_not_merged(client, emb):

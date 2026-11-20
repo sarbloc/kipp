@@ -15,7 +15,8 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field, replace
+from collections import Counter, defaultdict
+from dataclasses import astuple, dataclass, field, replace
 from datetime import datetime
 from typing import Protocol
 
@@ -209,15 +210,28 @@ def move_facts(
         )
 
     if fresh is not None:
-        # Remove only what the target was written with, by identity.
-        gone = {fact_key(f) for f in landed}
-        fresh.facts = [f for f in fresh.facts if fact_key(f) not in gone]
+        # Remove only facts exactly as the target was written with them. One
+        # changed since (only possible once attempts run out) stays: on both
+        # entities, but never lost.
+        gone = Counter(_state(f) for f in landed)
+        kept = []
+        for f in fresh.facts:
+            if gone[_state(f)] > 0:
+                gone[_state(f)] -= 1
+            else:
+                kept.append(f)
+        fresh.facts = kept
         fresh.last_updated = now.isoformat()
         write_entity(client, fresh, embedder, domain=domain, now=now)
 
     result.source_facts = _current(fresh) if fresh is not None else 0
     result.target_facts = _current(target)
     return result
+
+
+def _state(fact: Fact) -> tuple:
+    """Every stored field of a fact, hashable."""
+    return astuple(replace(fact, embedding=None))
 
 
 def _copy_key(fact: Fact) -> tuple:
@@ -237,27 +251,35 @@ def _land(target: Entity, facts: list[Fact]) -> None:
     target fact absorbs at most one incoming fact; the rest are appended, so
     separate assertions of the same text stay separate.
     """
+    held: dict[tuple, list[int]] = defaultdict(list)
+    for i, f in enumerate(target.facts):
+        held[fact_key(f)].append(i)
     used: set[int] = set()
-    held = {fact_key(f): i for i, f in enumerate(target.facts)}
     pending = []
     for fact in facts:
-        i = held.get(fact_key(fact))
-        if i is None or i in used:
+        i = _take(held[fact_key(fact)], used)
+        if i is None:
             pending.append(fact)
             continue
         _absorb(target, i, fact)
-        used.add(i)
-    copies: dict[tuple, int] = {}
+    copies: dict[tuple, list[int]] = defaultdict(list)
     for i, f in enumerate(target.facts):
-        if i not in used:
-            copies.setdefault(_copy_key(f), i)
+        copies[_copy_key(f)].append(i)
     for fact in pending:
-        i = copies.pop(_copy_key(fact), None)
+        i = _take(copies[_copy_key(fact)], used)
         if i is None:
             target.facts.append(replace(fact, embedding=None))
             continue
         _absorb(target, i, fact)
-        used.add(i)
+
+
+def _take(candidates: list[int], used: set[int]) -> int | None:
+    """The first index in ``candidates`` not yet used, marked used."""
+    for i in candidates:
+        if i not in used:
+            used.add(i)
+            return i
+    return None
 
 
 def _absorb(target: Entity, i: int, fact: Fact) -> None:
