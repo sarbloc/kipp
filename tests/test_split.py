@@ -258,8 +258,9 @@ def test_fact_superseded_mid_move_stays_with_its_replacement(client, emb, monkey
             real(client_, fresh, emb, domain="personal", now=NOW)
 
     monkeypatch.setattr(split_mod, "write_entity", racing_supersede)
-    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
-               domain="personal", now=NOW)
+    r = move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+                   domain="personal", now=NOW)
+    assert (r.moved, r.left, r.carried) == ([], ["Works at Initech."], 0)
 
     # No longer current, so no longer selected: the copy is taken back and
     # the history stays with its replacement.
@@ -950,4 +951,45 @@ def test_an_ambiguous_link_stays_ambiguous_as_groups_move(client, emb, interrupt
 def test_validate_plan_rejects_wrong_types(bad):
     with pytest.raises(ValueError):
         validate_plan(bad)
+
+
+def test_separate_moves_keep_an_ambiguous_link_ambiguous(client, emb):
+    _seed(client, emb, _same_day_os())
+    move_facts(client, emb, "person:alice", "person:alice-mac", ["Uses macOS."], domain="personal", now=NOW)
+    move_facts(client, emb, "person:alice", "person:alice-linux", ["Uses Linux."], domain="personal", now=NOW)
+    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Uses Windows."]
+
+
+def test_an_occurrence_that_had_already_ended_is_not_the_replacement(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Uses Linux.", added="2020-01-01", superseded_at="2023-01-01", superseded_by="Uses macOS."),
+        _fact("Uses macOS.", added="2023-01-01"),
+        # Replaced by "Uses Linux." in 2026, since reworded by a merge (#26).
+        _fact("Uses Windows.", added="2024-01-01", superseded_at="2026-01-01", superseded_by="Uses Linux."),
+        _fact("Uses Linux on the laptop.", added="2026-01-01"),
+    ]))
+    move_facts(client, emb, "person:alice", "person:alice-mac", ["Uses macOS."], domain="personal", now=NOW)
+    assert "Uses Windows." in _texts(get_entity(client, "person:alice", domain="personal"))
+
+
+def test_a_fact_changing_on_every_attempt_is_reported_left(client, emb, monkeypatch, caplog):
+    _seed(client, emb, _alice())
+    real = split_mod.write_entity
+
+    def bump(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-health":
+            fresh = get_entity(client, "person:alice", domain="personal")
+            for f in fresh.facts:
+                if f.text == "Allergic to penicillin.":
+                    f.hit_count += 1
+            real(client_, fresh, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", bump)
+    r = move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+                   domain="personal", now=NOW)
+
+    assert "changed on each of 5 attempts" in caplog.text
+    assert (r.moved, r.left) == ([], ["Allergic to penicillin."])
+    assert "Allergic to penicillin." in _texts(get_entity(client, "person:alice", domain="personal"))
 

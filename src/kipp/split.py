@@ -28,7 +28,7 @@ from typing import Protocol, Sequence
 import numpy as np
 from qdrant_client import QdrantClient
 
-from kipp.client import get_entity
+from kipp.client import get_entity, list_children
 from kipp.facts import sync_until_stable, write_entity
 from kipp.merge import longer_lifetime
 from kipp.models import Entity, Fact
@@ -76,7 +76,7 @@ class MoveResult:
     moved: list[str] = field(default_factory=list)      # requested texts moved now
     already: list[str] = field(default_factory=list)    # requested texts already on the target only
     unmatched: list[str] = field(default_factory=list)  # requested texts on neither
-    left: list[str] = field(default_factory=list)       # kept on the source: the target changed under the move
+    left: list[str] = field(default_factory=list)       # still on the source: changed during the move
     carried: int = 0         # superseded facts that followed their replacement
     created: bool = False    # target didn't exist before
     source_facts: int = 0    # source's current facts afterwards
@@ -140,8 +140,9 @@ def _replacement(facts: list[Fact], i: int, elsewhere: Sequence[Fact] = ()) -> i
 
     ``superseded_by`` is a text, and a text can recur (Linux, then macOS,
     then Linux again). The replacement is the latest occurrence of that text
-    in effect (``valid_from``, else ``added``) on or before the supersession
-    date; a later reassertion isn't it. Occurrences already moved to a
+    in effect (from ``valid_from``, else ``added``, until its own
+    supersession) on the supersession date; a later reassertion or an
+    occurrence that had already ended isn't it. Occurrences already moved to a
     related entity (``elsewhere``; a copy of one still here counts once)
     count too, so a link that was ambiguous stays ambiguous as groups move.
     None when no occurrence on ``facts`` is the unique latest: that history
@@ -153,8 +154,9 @@ def _replacement(facts: list[Fact], i: int, elsewhere: Sequence[Fact] = ()) -> i
     def when(f: Fact) -> str:
         return (f.valid_from or f.added)[:10]
 
-    def candidate(f: Fact) -> bool:
-        return f.text == fact.superseded_by and when(f) <= day
+    def candidate(f: Fact) -> bool:  # that text, in effect on the day
+        return (f.text == fact.superseded_by and when(f) <= day
+                and (f.superseded_at is None or f.superseded_at[:10] >= day))
 
     here = [(when(f), j) for j, f in enumerate(facts) if j != i and candidate(f)]
     copies = Counter(_copy_key(facts[j]) for _, j in here)
@@ -213,7 +215,7 @@ def move_facts(
 
     Texts match exactly; see ``select_facts`` for which facts a text takes.
     ``related`` names other entities (a plan's other targets) whose facts
-    count when resolving history links.
+    count when resolving history links; the source's children always do.
     Each fact moves unchanged: same timestamps, provenance and hit count, no
     similarity merge on landing. A target that doesn't exist is created with
     the type from its id prefix and ``parent=source_id``; an existing target
@@ -260,6 +262,9 @@ def _move(
     if target is None:
         target = Entity(id=target_id, type=target_type, parent=source_id)
 
+    # Earlier destinations (the source's children) count as related too, so
+    # separate memory_move calls resolve history like one plan does.
+    related = [*related, *list_children(client, source_id, domain=domain)]
     others = [
         f for rid in dict.fromkeys(related) if rid not in (source_id, target_id)
         for f in (get_entity(client, rid, domain=domain) or Entity(id=rid, type="")).facts
@@ -321,9 +326,6 @@ def _move(
         safe = _still_on(stored, landed)
         target = stored or Entity(id=target_id, type=target_type)
         if len(safe) < len(landed):
-            kept = {f.text for f in _without(landed, safe)}
-            result.left = [t for t in result.moved if t in kept]
-            result.moved = [t for t in result.moved if t not in kept]
             log.warning(
                 "move %s -> %s (%s): %d of %d facts were no longer on the target "
                 "after writing it; they stay on the source", source_id, target_id,
@@ -334,6 +336,17 @@ def _move(
             fresh.last_updated = now.isoformat()
             write_entity(client, fresh, embedder, domain=domain, now=now)
 
+        landed = safe
+
+    # Report what happened, not what was asked: a text moved only if it is
+    # now current on the target and no longer current on the source.
+    on_source = {f.text for f in fresh.facts if f.is_current} if fresh is not None else set()
+    on_target = {f.text for f in target.facts if f.is_current}
+    asked = result.moved
+    result.moved = [t for t in asked if t in on_target and t not in on_source]
+    result.left = [t for t in asked if t not in result.moved]
+    requested = set(texts)
+    result.carried = sum(1 for f in landed if not (f.is_current and f.text in requested))
     result.source_facts = _current(fresh) if fresh is not None else 0
     result.target_facts = _current(target)
     return result

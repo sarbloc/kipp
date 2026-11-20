@@ -277,3 +277,10 @@ def test_plan_leaves_facts_split_into_a_topic_child():
     plan = plan_repair([alice, knee, physio])
 
     assert plan.moves == []
+
+
+def test_plan_leaves_facts_in_an_existing_topic_entity_without_a_parent():
+    alice = Entity(id="person:alice", type="person", facts=[])
+    health = Entity(id="person:alice-health", type="person", facts=[_fact("[person:alice] Hurt her knee.")])
+    assert plan_repair([alice, health]).moves == []
+

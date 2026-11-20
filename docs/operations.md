@@ -132,8 +132,9 @@ tool:
   new; history moves only with its replacement.
 - Superseded facts follow the fact that replaced them, whichever group moves
   first. If the replacing text occurs more than once, the link goes to the
-  latest occurrence in effect by the supersession date; a tie leaves the
-  history where it is. Unlinked history stays
+  latest occurrence in effect on the supersession date, counting ones
+  already moved to the source's children; a tie leaves the history where
+  it is. Unlinked history stays
   on the source, and so does history whose replacement was later reworded by
   a merge (#26).
 - A plan that lists a history-only text in `keep` or another group, while
@@ -154,7 +155,10 @@ tool:
   like any two KIPP writes to the same entity, a store racing a move is
   last-writer-wins. The move re-reads the target before touching the source
   and leaves anything a racing write knocked off it on the source, which
-  narrows that window to the gap between two reads. Apply a split while
+  narrows that window to the gap between two reads. Anything that changed
+  during the move is reported as left on the source; re-run to finish.
+- `kipp repair` leaves a fact tagged with an entity's id alone when it sits
+  in a topic entity of it (`<id>-<topic>`, or a child via `parent`). Apply a split while
   nothing else is writing that entity (pause the agent, or pick a quiet
   moment).
 

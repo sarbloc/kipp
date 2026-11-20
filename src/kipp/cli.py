@@ -548,7 +548,7 @@ def split_apply_cmd(plan_file: Path, apply_changes: bool):
         for text in r.unmatched:
             click.echo(f"  not found: {text[:100]}")
         for text in r.left:
-            click.echo(f"  left on the source (target changed meanwhile; re-run): {text[:100]}")
+            click.echo(f"  left on the source (changed during the move; re-run): {text[:100]}")
     if apply_changes:
         remaining = results[-1].source_facts if results else None
         if remaining is not None:

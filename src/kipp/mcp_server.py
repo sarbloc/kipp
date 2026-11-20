@@ -301,8 +301,8 @@ def memory_move(
     on neither; calling again with the same arguments finishes the move.
 
     Returns ``moved`` (texts moved now), ``already`` (texts only on the target
-    already), ``unmatched`` (texts on neither entity), ``left`` (texts kept
-    on the source because a concurrent write changed the target: call again),
+    already), ``unmatched`` (texts on neither entity), ``left`` (texts still
+    on the source because a concurrent write changed them: call again),
     ``carried`` (superseded facts moved with them), ``created`` and each
     side's current fact count.
     """
