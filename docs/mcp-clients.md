@@ -18,10 +18,11 @@ command -v kipp        # e.g. /home/you/.local/bin/kipp
 ```
 
 **Environment.** With the default local Qdrant, `kipp mcp` needs no
-environment. If your Qdrant is elsewhere or needs a key, pass `QDRANT_URL` and
-`QDRANT_API_KEY` in the client's `env` block, or put them in
-`~/.config/kipp/config.json` once (see
-[operations.md](operations.md#configuration)) and skip `env` everywhere.
+environment. If your Qdrant is elsewhere, pass `QDRANT_URL` in the client's
+`env` block, or set the URL once in `~/.config/kipp/config.json` (see
+[operations.md](operations.md#configuration)). An API key is only ever read
+from the environment, so if Qdrant needs one, every client's `env` block must
+include `QDRANT_API_KEY`.
 
 **First call is slower.** The server starts in about a second. The first tool
 call loads the embedding model, about 5 seconds when it's cached, longer if it

@@ -135,7 +135,8 @@ claude -p "$(cat ~/kipp/contrib/extraction-prompt.md)" \
 
 `--allowedTools mcp__kipp` lets it use the KIPP tools without prompting, and
 nothing else. Run it once by hand to check the summary, then schedule it, for
-example with cron:
+example with cron. Create the log directory first with
+`mkdir -p ~/.local/state`, or the redirect fails and the job never starts.
 
 ```cron
 # m h dom mon dow
