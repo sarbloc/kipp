@@ -241,42 +241,43 @@ def _copy_key(fact: Fact) -> tuple:
 
 
 def _land(target: Entity, facts: list[Fact]) -> None:
-    """Append ``facts`` to ``target``, merging copies it already holds.
+    """Append ``facts`` to ``target``, merging copies an interrupted move left.
 
-    A fact on the target with the same identity, or the same text, dates and
-    source but superseded on one side only, is a copy left by an interrupted
-    move (or filed twice). The pair becomes one fact keeping the stronger of
-    each field, so no lifetime, validity or hit is lost; superseded wins, so a
-    claim retired on either side since the copy was made stays retired. Each
-    target fact absorbs at most one incoming fact; the rest are appended, so
-    separate assertions of the same text stay separate.
+    A copy keeps the fact's text, dates and source. Matching is one-to-one
+    and runs in two passes:
+
+    1. Same copy key and same ``superseded_at``: the plain leftover copy.
+    2. Same copy key, superseded on exactly one side: a store retired the
+       claim on one entity after the copy was made. Superseded wins.
+
+    A matched pair becomes one fact keeping the stronger of each field, so
+    no lifetime or hit is lost. Anything else is appended: the same text
+    filed separately, or two histories ending on different dates, stays two
+    facts (moves never similarity-merge).
     """
-    held: dict[tuple, list[int]] = defaultdict(list)
-    for i, f in enumerate(target.facts):
-        held[fact_key(f)].append(i)
     used: set[int] = set()
+    by_copy: dict[tuple, list[int]] = defaultdict(list)
+    for i, f in enumerate(target.facts):
+        by_copy[_copy_key(f)].append(i)
     pending = []
     for fact in facts:
-        i = _take(held[fact_key(fact)], used)
+        i = _take(by_copy[_copy_key(fact)], used, lambda f: f.superseded_at == fact.superseded_at, target)
         if i is None:
             pending.append(fact)
-            continue
-        _absorb(target, i, fact)
-    copies: dict[tuple, list[int]] = defaultdict(list)
-    for i, f in enumerate(target.facts):
-        copies[_copy_key(f)].append(i)
+        else:
+            _absorb(target, i, fact)
     for fact in pending:
-        i = _take(copies[_copy_key(fact)], used)
+        i = _take(by_copy[_copy_key(fact)], used, lambda f: f.is_current != fact.is_current, target)
         if i is None:
             target.facts.append(replace(fact, embedding=None))
-            continue
-        _absorb(target, i, fact)
+        else:
+            _absorb(target, i, fact)
 
 
-def _take(candidates: list[int], used: set[int]) -> int | None:
-    """The first index in ``candidates`` not yet used, marked used."""
+def _take(candidates: list[int], used: set[int], ok, target: Entity) -> int | None:
+    """The first unused index in ``candidates`` whose fact passes ``ok``, marked used."""
     for i in candidates:
-        if i not in used:
+        if i not in used and ok(target.facts[i]):
             used.add(i)
             return i
     return None
@@ -286,7 +287,6 @@ def _absorb(target: Entity, i: int, fact: Fact) -> None:
     twin = target.facts[i]
     target.facts[i] = replace(
         twin,
-        added=min(twin.added, fact.added),
         last_seen=max(filter(None, [twin.last_seen, fact.last_seen]), default=None),
         hit_count=max(twin.hit_count, fact.hit_count),
         expires=longer_lifetime(twin.expires, fact.expires),

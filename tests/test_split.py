@@ -189,12 +189,12 @@ def test_crash_after_target_write_loses_nothing_and_rerun_finishes(client, emb, 
     assert "Runs 5k three times a week." not in _texts(get_entity(client, "person:alice", domain="personal"))
 
 
-def test_landing_on_an_identical_fact_keeps_the_stronger_fields(client, emb):
+def test_landing_on_a_leftover_copy_keeps_the_stronger_fields(client, emb):
     _seed(client, emb, Entity(id="person:alice", type="person", facts=[
         _fact("Allergic to penicillin.", added="2025-01-01", hit_count=2, last_seen="2026-01-01"),
     ]))
     _seed(client, emb, Entity(id="person:alice-health", type="person", facts=[
-        _fact("Allergic to penicillin.", added="2026-10-01", hit_count=5, last_seen="2025-06-01",
+        _fact("Allergic to penicillin.", added="2025-01-01", hit_count=5, last_seen="2025-06-01",
               expires="2026-12-01"),
     ]))
 
@@ -205,6 +205,51 @@ def test_landing_on_an_identical_fact_keeps_the_stronger_fields(client, emb):
     assert (fact.added, fact.last_seen, fact.hit_count, fact.expires) == (
         "2025-01-01", "2026-01-01", 5, None,
     )
+
+
+def test_same_text_filed_separately_on_the_target_stays_separate(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Allergic to penicillin.", added="2025-01-01"),
+    ]))
+    _seed(client, emb, Entity(id="person:alice-health", type="person", facts=[
+        _fact("Allergic to penicillin.", added="2026-10-01", expires="2026-12-01"),
+    ]))
+
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-health", domain="personal")
+    assert [(f.added, f.expires) for f in target.facts] == [("2026-10-01", "2026-12-01"), ("2025-01-01", None)]
+
+
+def test_histories_ending_on_different_dates_stay_separate(client, emb):
+    old = dict(added="2020-01-01", superseded_by="Lives in Leeds.")
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Lives in Leeds."), _fact("Lives in York.", superseded_at="2026-09-01", **old),
+    ]))
+    _seed(client, emb, Entity(id="person:alice-home", type="person", facts=[
+        _fact("Lives in York.", superseded_at="2026-06-01", **old),
+    ]))
+
+    move_facts(client, emb, "person:alice", "person:alice-home", ["Lives in Leeds."], domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-home", domain="personal")
+    assert sorted(f.superseded_at or "" for f in target.facts) == ["", "2026-06-01", "2026-09-01"]
+
+
+def test_resume_matches_each_copy_to_its_own_fact(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Said hello.", added="2026-01-01"), _fact("Said hello.", added="2026-02-01"),
+    ]))
+    _seed(client, emb, Entity(id="person:alice-x", type="person", facts=[
+        _fact("Said hello.", added="2026-01-01", superseded_at="2026-03-01"),
+        _fact("Said hello.", added="2026-02-01"),
+    ]))
+
+    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-x", domain="personal")
+    assert [(f.added, f.superseded_at) for f in target.facts] == [("2026-01-01", "2026-03-01"), ("2026-02-01", None)]
 
 
 def test_fact_superseded_mid_move_lands_superseded(client, emb, monkeypatch):
