@@ -45,7 +45,9 @@ didn't land, or anything already in memory (search first).
   old fact becomes history instead of contradicting the new one.
 - If you're unsure where a fact belongs, log it with memory_event instead and
   leave it for the extraction pass. Open the text with a `[type:id]` tag when
-  you know the subject: `[person:alice] Moved to the payments team.`
+  you know the subject: `[person:alice] Speaks fluent Portuguese.`
+- Tagged events can only add facts. A fact that replaces an old one always
+  goes through memory_store with `supersedes`.
 
 Don't announce memory writes. Just make them.
 ```
@@ -78,6 +80,9 @@ is filed onto that entity automatically by `memory_extract`:
 - **No tag.** Untagged events always wait for the extraction pass.
 - **Only tag what you're sure of.** A wrong tag files the fact on the wrong
   entity.
+- **Additions only.** Tag filing merges a fact in, but never marks an old fact
+  superseded. "Moved to the payments team" filed by tag leaves her old team
+  current too. Use `memory_store` with `supersedes` for changes.
 
 ### Writing good facts
 

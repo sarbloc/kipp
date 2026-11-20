@@ -14,7 +14,8 @@ ever-growing log. Local, deterministic, no LLM in the loop.
 - **Bounded.** Compaction trims each entity to its 20 best current facts,
   ranked by how often, how recently and how permanently they were asserted.
 - **History kept.** A replaced fact is marked superseded, not deleted, so you
-  can ask what was true on a past date.
+  can ask what was true on a past date. Compaction drops superseded facts
+  first, so an entity that hits the cap loses its oldest history.
 - **Local and deterministic.** Qdrant in Docker plus a small local embedding
   model. Merge, dedup, compaction and expiry are plain maths: no API calls, no
   LLM, same input gives the same result.
