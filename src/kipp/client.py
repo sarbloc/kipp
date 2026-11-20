@@ -250,6 +250,7 @@ def entity_to_point(entity: Entity, vector: list[float]) -> PointStruct:
             for f in entity.facts
         ],
         "last_updated": entity.last_updated,
+        "parent": entity.parent,
     }
     return PointStruct(
         id=entity_point_id(entity.id),
@@ -282,6 +283,7 @@ def point_to_entity(point) -> Entity:
         type=p["type"],
         facts=facts,
         last_updated=p.get("last_updated", ""),
+        parent=p.get("parent"),
     )
 
 
@@ -384,6 +386,32 @@ def scroll_entities(
                 break
             offset = next_offset
     return results
+
+
+def list_children(
+    client: QdrantClient, parent_id: str, *, domain: str = "shared",
+) -> list[str]:
+    """Ids of the entities in ``domain`` whose ``parent`` is ``parent_id``, sorted.
+
+    The filter runs without a payload index; at hundreds of entities per
+    domain that's a cheap full scan.
+    """
+    children: list[str] = []
+    parent_filter = Filter(must=[FieldCondition(key="parent", match=MatchValue(value=parent_id))])
+    for kind in ("entities", "decisions"):
+        coll = collection_name(domain, kind)
+        if not client.collection_exists(coll):
+            continue
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=coll, scroll_filter=parent_filter, limit=100,
+                offset=offset, with_payload=["entity_id"],
+            )
+            children.extend(p.payload["entity_id"] for p in points)
+            if offset is None:
+                break
+    return sorted(children)
 
 
 def store_event(

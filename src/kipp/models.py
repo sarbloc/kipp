@@ -56,6 +56,9 @@ class Entity:
     type: str  # person | project | tool | preference | decision
     facts: list[Fact] = field(default_factory=list)
     last_updated: str = ""
+    # Topic entities split out of a bigger one point back at it (#52), e.g.
+    # person:alice-health -> person:alice. Same domain; None for top-level.
+    parent: Optional[str] = None
 
 
 @dataclass

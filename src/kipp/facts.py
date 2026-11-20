@@ -146,10 +146,10 @@ def write_entity(
     the entity itself is stored, and ``kipp reindex`` repairs the index.
     """
     upsert_entity(client, entity, embedder.embed(build_vector_text(entity, now=now)), domain=domain)
-    _sync_until_stable(client, entity, embedder, domain=domain)
+    sync_until_stable(client, entity, embedder, domain=domain)
 
 
-def _sync_until_stable(
+def sync_until_stable(
     client: QdrantClient, entity: Entity, embedder: EmbedderLike, *, domain: str,
 ) -> None:
     """Sync ``entity``'s fact points, then re-read and re-sync until the stored
@@ -201,7 +201,7 @@ def prune_orphan_fact_points(
         pruned += 1
         revived = get_entity(client, eid, domain=domain)
         if revived is not None:
-            _sync_until_stable(client, revived, embedder, domain=domain)
+            sync_until_stable(client, revived, embedder, domain=domain)
     return pruned
 
 

@@ -34,7 +34,9 @@ For each domain:
         words: re-store it as shorter facts.
       - If memory_store returns `oversized`, the entity is too broad. Put
         later facts on a topic entity named `<id>-<topic>` (e.g.
-        `alice-health` for `person:alice`), reusing existing topic ids.
+        `alice-health` for `person:alice`). memory_get on the entity lists
+        its existing topic entities as `children`: reuse those. When you
+        create a new one, pass `parent` with the entity's full id.
       - When a fact replaces an older one ("moved to Berlin" after "lives in
         London"), pass `supersedes` with the old fact's exact text.
    d. Call memory_event_resolve({ event_id, domain, created_entity_id }) for

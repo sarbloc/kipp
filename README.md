@@ -104,7 +104,8 @@ already running on port 6333.
   is appended.
 - **No fact cap:** every fact is searched on its own, so entities can grow.
   Past 30 current facts, writes return an `oversized` note suggesting a split
-  into topic entities (`kipp oversized` lists them). `kipp compact` exists to
+  into topic entities (`kipp oversized` lists them; `kipp split-plan` and
+  `kipp split-apply` do the split, and children point at their `parent`). `kipp compact` exists to
   trim to the top 20 by frequency × recency × permanence, but it deletes
   facts and nothing runs it.
 

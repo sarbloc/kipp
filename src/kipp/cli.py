@@ -18,6 +18,7 @@ from kipp.client import (
     ensure_collections,
     get_client,
     get_entity,
+    list_children,
     qdrant_connection,
     scroll_entities,
     store_event,
@@ -86,7 +87,14 @@ def stats():
     "--valid-from", "valid_from", default=None,
     help="ISO date the new fact became true in the world, if not today.",
 )
-def store(entity_type: str, entity_id: str, content: str, supersedes: str | None, valid_from: str | None):
+@click.option(
+    "--parent", default=None,
+    help="Full id of the entity this one was split from, e.g. person:alice.",
+)
+def store(
+    entity_type: str, entity_id: str, content: str, supersedes: str | None,
+    valid_from: str | None, parent: str | None,
+):
     """Directly upsert an entity with a fact."""
     client = get_client()
     ensure_collections(client)
@@ -103,9 +111,19 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
             f"{today}); future-effective dating is tracked in issue #24"
         )
 
+    if parent is not None:
+        from kipp.split import check_parent
+
+        try:
+            check_parent(client, full_id, parent, domain="shared")
+        except ValueError as exc:
+            raise click.ClickException(str(exc))
+
     existing = get_entity(client, full_id)
     if existing is None:
         existing = Entity(id=full_id, type=entity_type)
+    if parent is not None:
+        existing.parent = parent
 
     superseded = None
     if supersedes:
@@ -138,16 +156,22 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
 
 @main.command()
 @click.argument("entity_id")
-def get(entity_id: str):
+@click.option("--domain", type=click.Choice(DOMAINS), default="shared", show_default=True)
+def get(entity_id: str, domain: str):
     """Retrieve a single entity's full detail."""
     client = get_client()
-    entity = get_entity(client, entity_id)
+    entity = get_entity(client, entity_id, domain=domain)
     if entity is None:
         click.echo(f"Not found: {entity_id}")
         raise SystemExit(1)
 
-    click.echo(f"{entity.type}:{entity.id}")
+    click.echo(entity.id)
     click.echo(f"Updated: {entity.last_updated}")
+    if entity.parent:
+        click.echo(f"Parent: {entity.parent}")
+    children = list_children(client, entity.id, domain=domain)
+    if children:
+        click.echo(f"Children: {', '.join(children)}")
     click.echo(f"Facts ({len(entity.facts)}):")
     for f in entity.facts:
         expires = f" [expires {f.expires}]" if f.expires else ""
@@ -456,6 +480,83 @@ def oversized(domain: str, threshold: int):
         click.echo(f"{n:>5}  {d:<9} {eid}")
 
 
+@main.command(name="split-plan")
+@click.argument("entity_id")
+@click.option("--domain", type=click.Choice(DOMAINS), default="shared", show_default=True)
+@click.option(
+    "--groups", type=click.IntRange(min=1), default=None,
+    help="Number of topic groups. Default: current facts / 12, between 2 and 12.",
+)
+@click.option(
+    "-o", "--output", type=click.Path(dir_okay=False, path_type=Path), default=None,
+    help="Write the plan here instead of stdout.",
+)
+def split_plan_cmd(entity_id: str, domain: str, groups: int | None, output: Path | None):
+    """Group an entity's facts by topic into an editable split plan. Read-only.
+
+    Edit the JSON: rename each group's target, move facts between groups or
+    into "keep" (they stay on the source), delete groups. Then run
+    `kipp split-apply`.
+    """
+    import json as json_mod
+
+    from kipp.split import plan_split
+
+    client = get_client()
+    entity = get_entity(client, entity_id, domain=domain)
+    if entity is None:
+        raise click.ClickException(f"{entity_id} not found in domain {domain!r}")
+    plan = plan_split(entity, _get_embedder(), domain=domain, now=datetime.utcnow(), groups=groups)
+    text = json_mod.dumps(plan, indent=2, ensure_ascii=False) + "\n"
+    if output is None:
+        click.echo(text, nl=False)
+    else:
+        output.write_text(text)
+    for g in plan["groups"]:
+        click.echo(f"{len(g['facts']):>4}  {g['target']}  ({', '.join(g['keywords'])})", err=True)
+    click.echo(f"{len(plan['keep']):>4}  keep on {entity.id}", err=True)
+
+
+@main.command(name="split-apply")
+@click.argument("plan_file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option("--apply", "apply_changes", is_flag=True, help="Move the facts. Default is a dry run.")
+def split_apply_cmd(plan_file: Path, apply_changes: bool):
+    """Move facts into topic entities as a split plan says.
+
+    Dry run by default. Targets are written before facts leave the source, so
+    an interrupted run duplicates facts rather than losing them; re-run the
+    same plan to finish. Take a backup before --apply.
+    """
+    import json as json_mod
+
+    from kipp.split import apply_plan
+
+    plan = json_mod.loads(plan_file.read_text())
+    client = get_client()
+    embedder = _get_embedder() if apply_changes else None
+    try:
+        results = apply_plan(client, embedder, plan, now=datetime.utcnow(), apply=apply_changes)
+    except ValueError as exc:
+        raise click.ClickException(str(exc))
+    verb = "moved" if apply_changes else "would move"
+    for r in results:
+        new = " (new)" if r.created else ""
+        carried = f", {r.carried} superseded with them" if r.carried else ""
+        click.echo(f"{r.target}{new}: {verb} {len(r.moved)}{carried}")
+        if r.already:
+            click.echo(f"  already moved: {len(r.already)}")
+        for text in r.unmatched:
+            click.echo(f"  not found: {text[:100]}")
+        for text in r.left:
+            click.echo(f"  left on the source (changed during the move; re-run): {text[:100]}")
+    if apply_changes:
+        remaining = results[-1].source_facts if results else None
+        if remaining is not None:
+            click.echo(f"{plan['source']} keeps {remaining} current facts.")
+    else:
+        click.echo("DRY-RUN: nothing written. Pass --apply to move facts.")
+
+
 @main.command(name="compact")
 @click.option("--max-facts", default=20, help="Max facts per entity")
 @_maintenance_domain
@@ -550,6 +651,8 @@ def import_cmd(file: str):
         existing = get_entity(client, entity.id)
         if existing is None:
             existing = Entity(id=entity.id, type=entity.type)
+        if existing.parent is None:
+            existing.parent = entity.parent
 
         merged = merge(existing, entity.facts, embedder, now=now)
         write_entity(client, merged, embedder)

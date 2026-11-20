@@ -59,13 +59,28 @@ def plan_repair(entities: list[Entity]) -> RepairPlan:
             body = body.strip()
             if tag is None:
                 plan.untagged_extracted[entity.id] += 1
-            elif tag == entity.id or not body:
-                continue
+            elif tag == entity.id or not body or _is_topic_of(tag, entity, by_id):
+                continue  # a fact split into a topic entity keeps its parent's tag
             elif tag in by_id:
                 plan.moves.append(Move(entity.id, tag, fact, body))
             else:
                 plan.missing_targets[tag] += 1
     return plan
+
+
+def _is_topic_of(entity_id: str, entity: Entity, by_id: dict[str, Entity]) -> bool:
+    """True if ``entity`` is a topic entity of ``entity_id`` (#52): named
+    ``<entity_id>-<topic>``, or with ``entity_id`` up its ``parent`` chain."""
+    if entity.id.startswith(entity_id + "-"):
+        return True
+    seen = {entity.id}
+    parent = entity.parent
+    while parent and parent not in seen:
+        if parent == entity_id:
+            return True
+        seen.add(parent)
+        parent = by_id[parent].parent if parent in by_id else None
+    return False
 
 
 def apply_repair(
