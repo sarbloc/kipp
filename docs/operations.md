@@ -64,6 +64,42 @@ Writes don't compact, so an entity can grow past 20 facts until `compact`
 runs. Run `expire` daily (see [systemd timers](#systemd-timers)) and
 `compact --domain all` now and then, for example weekly from cron.
 
+## Recall evaluation
+
+`kipp eval` scores search against questions whose answer you already know.
+Run it before and after any change to search, merge or how facts are written,
+and compare the numbers. It only reads.
+
+```bash
+kipp eval                          # uses ~/.config/kipp/eval.jsonl
+kipp eval path/to/cases.jsonl --k 10
+kipp eval --json                   # per-case ranks for scripting
+```
+
+A case file is JSON Lines, one question per line. Blank lines and lines
+starting with `//` are skipped.
+
+```json
+{"query": "who leads the billing team", "expected": "person:alice"}
+{"query": "...", "expected": ["project:a", "project:b"], "domain": "dev", "fact": "retries back off"}
+```
+
+- `expected`: the entity id that should answer, or a list where any id counts.
+- `domain`: `shared` (default), `dev` or `personal`.
+- `fact`: optional text from the fact that answers the question. The report
+  then says whether that fact starts inside the part of the entity's search
+  text the embedding model reads (`window:in`) or past it (`window:out`).
+  Facts past the window can't influence the entity's vector.
+
+The report gives hit@1, hit@5 and mean reciprocal rank overall, per domain and
+per window group, then lists every question that missed the top 5.
+[`contrib/eval.example.jsonl`](../contrib/eval.example.jsonl) matches the
+README quick start.
+
+Write questions the way you'd ask them, not by copying fact text, or the
+scores will flatter search. A case file built from real memory holds personal
+data, so keep it out of version control.
+
 ## Backup and restore
 
 ```bash

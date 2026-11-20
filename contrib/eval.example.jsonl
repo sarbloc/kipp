@@ -1,0 +1,4 @@
+// Example recall eval set for the README quick start (person:alice).
+// Run: kipp eval contrib/eval.example.jsonl
+{"query": "who runs billing", "expected": "person:alice", "fact": "Leads the billing team"}
+{"query": "which person is in charge of invoices and payments", "expected": "person:alice"}

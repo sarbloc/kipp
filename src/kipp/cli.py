@@ -196,6 +196,46 @@ def search(query: str, entity_type: str | None, limit: int, as_of: str | None):
     click.echo(format_results(results))
 
 
+@main.command(name="eval")
+@click.argument(
+    "case_file", required=False, type=click.Path(dir_okay=False, exists=True, path_type=Path),
+)
+@click.option(
+    "--k", default=10, show_default=True, type=click.IntRange(min=5),
+    help="Results fetched per question (at least 5, so hit@5 is measurable)",
+)
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def eval_cmd(case_file: Path | None, k: int, as_json: bool):
+    """Score search recall against known-answer questions. Read-only.
+
+    CASE_FILE is JSON Lines (default ~/.config/kipp/eval.jsonl). See
+    docs/operations.md#recall-evaluation for the format.
+    """
+    import json as json_mod
+    from kipp.evaluate import default_case_path, format_report, load_cases, report_json, run_case
+
+    path = case_file or default_case_path()
+    if not path.exists():
+        raise click.ClickException(f"No case file at {path}")
+    try:
+        cases = load_cases(path)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+    if not cases:
+        raise click.ClickException(f"{path} has no cases")
+
+    client = get_client()
+    embedder = _get_embedder()
+    results = [
+        run_case(client, embedder, c, k, embedder.count_tokens, embedder.window)
+        for c in cases
+    ]
+    if as_json:
+        click.echo(json_mod.dumps(report_json(results, k), indent=2))
+    else:
+        click.echo(format_report(results, k))
+
+
 EVENT_TTL_DAYS = 30
 
 
