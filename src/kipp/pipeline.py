@@ -36,7 +36,7 @@ from kipp.extract import (
     build_entity_index,
     extract_events_with_index,
 )
-from kipp.merge import build_search_text, merge
+from kipp.merge import build_vector_text, merge
 from kipp.models import Fact
 
 DEFAULT_BATCH_SIZE = 200
@@ -127,7 +127,7 @@ def run_extraction(
                 embedder, now=now,
             )
             upsert_entity(
-                client, merged, embedder.embed(build_search_text(merged)),
+                client, merged, embedder.embed(build_vector_text(merged)),
                 domain=domain,
             )
 

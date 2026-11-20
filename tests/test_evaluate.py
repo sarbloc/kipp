@@ -88,17 +88,21 @@ def test_rank_of():
 
 
 class TestFactWindow:
-    text = "one two three four five six"
+    full = "one two three four five six seven"
+    vec = "one two three four five six"  # "seven" clipped off
 
     def test_inside(self):
-        assert fact_window(self.text, "three four", words, window=3) == "in"
+        assert fact_window(self.full, self.vec, "three four", words, window=3) == "in"
 
-    def test_outside(self):
-        assert fact_window(self.text, "five", words, window=3) == "out"
+    def test_past_window(self):
+        assert fact_window(self.full, self.vec, "five", words, window=3) == "out"
+
+    def test_clipped_from_vector_text(self):
+        assert fact_window(self.full, self.vec, "seven", words, window=50) == "out"
 
     def test_case_insensitive_and_missing(self):
-        assert fact_window(self.text, "TWO", words, window=3) == "in"
-        assert fact_window(self.text, "seven", words, window=3) == "unknown"
+        assert fact_window(self.full, self.vec, "TWO", words, window=3) == "in"
+        assert fact_window(self.full, self.vec, "eight", words, window=3) == "unknown"
 
 
 def result(rank, domain="shared", window="unknown"):

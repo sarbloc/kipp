@@ -55,10 +55,18 @@ your MCP client's `env` block, and `~/.config/kipp/env` for the timers.
 kipp expire                  # delete events past 30 days and facts past their expiry date
 kipp compact                 # trim entities that are over the 20-fact cap
 kipp stats                   # point count for every collection
+kipp reindex                 # rebuild every entity's search vector from its facts
 ```
 
-`expire` and `compact` default to the `shared` domain. Pass
+`expire`, `compact` and `reindex` default to the `shared` domain. Pass
 `--domain dev`, `--domain personal` or `--domain all`.
+
+An entity's vector is only rebuilt when the entity is written. After upgrading
+to a release that changes how vectors are built, take a backup and run
+`kipp reindex --domain all` once, so existing entities pick up the change.
+`reindex` never modifies facts. Since issue #49, each entity's vector reads
+the first 16 words of each of its top 10 facts. The full text is still stored,
+returned and matched by keyword search.
 
 Writes don't compact, so an entity can grow past 20 facts until `compact`
 runs. Run `expire` daily (see [systemd timers](#systemd-timers)) and

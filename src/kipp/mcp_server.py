@@ -30,7 +30,7 @@ from kipp.client import (
     upsert_entity,
 )
 from kipp.extract import MATCH_THRESHOLD
-from kipp.merge import build_search_text, compact, mark_superseded, merge
+from kipp.merge import build_vector_text, compact, long_fact_warning, mark_superseded, merge
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 from kipp.search import format_results, search_entities
@@ -94,7 +94,9 @@ def memory_store(
     Args:
         entity_type: person | project | tool | preference | decision
         entity_id: short id (e.g. 'alice') or full id ('person:alice')
-        content: the fact text
+        content: the fact: one short, self-contained claim, key words first.
+            Search reads only the first 16 words of each fact; split longer
+            text into separate facts.
         domain: shared | dev | personal (default shared)
         supersedes: text of an existing CURRENT fact that this
             new fact replaces. When set, that fact is marked superseded (today)
@@ -112,8 +114,8 @@ def memory_store(
     fact, so the divergence is cosmetic; tightening it to the post-merge wording
     is deferred (issue #26).
 
-    Returns the entity id, its current fact count, and (when supersession fired)
-    the superseded fact's text.
+    Returns the entity id, its current fact count, (when supersession fired)
+    the superseded fact's text, and a ``warning`` when the fact is over 40 words.
     """
     _validate_domain(domain)
     client = get_client()
@@ -153,13 +155,16 @@ def memory_store(
 
     new_fact = Fact(text=content, added=today, source="mcp:store", valid_from=valid_from)
     merged = merge(existing, [new_fact], embedder, now=now)
-    vector = embedder.embed(build_search_text(merged))
+    vector = embedder.embed(build_vector_text(merged))
     upsert_entity(client, merged, vector, domain=domain)
 
     current_facts = sum(1 for f in merged.facts if f.is_current)
     result: dict[str, Any] = {"id": full_id, "facts": current_facts, "domain": domain}
     if supersedes:
         result["superseded"] = superseded
+    warning = long_fact_warning(content)
+    if warning:
+        result["warning"] = warning
     return result
 
 

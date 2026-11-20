@@ -7,14 +7,18 @@ import pytest
 from kipp.models import Entity, Fact
 from kipp.merge import (
     build_search_text,
+    build_vector_text,
     compact,
     drop_expired,
     find_duplicate,
+    long_fact_warning,
     mark_superseded,
     merge,
     fact_score,
     DUPE_THRESHOLD,
+    LONG_FACT_WORDS,
     MAX_FACTS,
+    VECTOR_FACT_WORDS,
 )
 
 
@@ -246,6 +250,33 @@ class TestBuildSearchText:
         high_pos = text.index("high priority")
         low_pos = text.index("low priority")
         assert high_pos < low_pos
+
+
+# ── build_vector_text / long_fact_warning ────────────────
+
+class TestBuildVectorText:
+    def test_clips_each_fact_but_keeps_all_of_them(self):
+        long = " ".join(f"w{i}" for i in range(100))
+        entity = Entity(id="project:x", type="project")
+        entity.facts = [_fact(long, hit_count=5), _fact("short tail fact")]
+        vec = build_vector_text(entity, now=NOW)
+        first = " ".join(f"w{i}" for i in range(VECTOR_FACT_WORDS))
+        assert vec == f"[project] project:x. {first}. short tail fact"
+        # The keyword payload keeps the full text.
+        assert long in build_search_text(entity, now=NOW)
+
+    def test_same_facts_and_order_as_search_text(self):
+        entity = Entity(id="test:e", type="test")
+        entity.facts = [_fact(f"fact {i}", hit_count=i) for i in range(15)]
+        entity.facts.append(_fact("old", superseded_at="2026-01-01"))
+        assert build_vector_text(entity, now=NOW) == build_search_text(entity, now=NOW)
+
+
+def test_long_fact_warning():
+    assert long_fact_warning("a short fact") is None
+    assert long_fact_warning(" ".join(["w"] * LONG_FACT_WORDS)) is None
+    msg = long_fact_warning(" ".join(["w"] * (LONG_FACT_WORDS + 1)))
+    assert msg is not None and f"{LONG_FACT_WORDS + 1} words" in msg
 
     def test_excludes_superseded_facts(self):
         # Superseded facts must not feed the search vector (issue #21).

@@ -15,6 +15,9 @@ from kipp.models import Entity, Fact
 DUPE_THRESHOLD = 0.9
 MAX_FACTS = 20
 HALF_LIFE_DAYS = 30
+SEARCH_TEXT_FACTS = 10   # facts in an entity's search text and vector text
+VECTOR_FACT_WORDS = 16   # words of each fact embedded (issue #49)
+LONG_FACT_WORDS = 40     # memory_store / store warn above this
 
 
 # ── Embedder protocol (satisfied by both Embedder and MockEmbedder) ──
@@ -179,20 +182,49 @@ def compact(entity: Entity, max_facts: int = MAX_FACTS, now: datetime | None = N
     return entity
 
 
-def build_search_text(entity: Entity, now: datetime | None = None) -> str:
-    """Build the search text string used for the entity's dense vector in Qdrant.
+def _top_fact_texts(entity: Entity, now: datetime | None) -> list[str]:
+    """Current facts only, best score first, top ``SEARCH_TEXT_FACTS``.
 
-    Format: "[{type}] {entity_id}. {fact_1}. {fact_2}. ... {fact_10}"
-    Current facts only, sorted by score, top 10. Superseded facts are excluded
-    (issue #21) so stale state stops feeding the entity's search vector.
+    Superseded facts are excluded (issue #21) so stale state stops feeding search.
     """
     now = now or datetime.utcnow()
-    parts = [f"[{entity.type}] {entity.id}"]
     current = [f for f in entity.facts if f.is_current]
-    sorted_facts = sorted(current, key=lambda f: fact_score(f, now), reverse=True)
-    for f in sorted_facts[:10]:
-        parts.append(f.text)
-    return ". ".join(parts)
+    ranked = sorted(current, key=lambda f: fact_score(f, now), reverse=True)
+    return [f.text for f in ranked[:SEARCH_TEXT_FACTS]]
+
+
+def build_search_text(entity: Entity, now: datetime | None = None) -> str:
+    """Full text of the entity's top facts, stored as the ``search_text`` payload.
+
+    Format: "[{type}] {entity_id}. {fact_1}. {fact_2}. ... {fact_10}". The
+    keyword index matches against it. The dense vector is built from
+    ``build_vector_text`` instead.
+    """
+    return ". ".join([f"[{entity.type}] {entity.id}", *_top_fact_texts(entity, now)])
+
+
+def build_vector_text(entity: Entity, now: datetime | None = None) -> str:
+    """Text embedded as the entity's dense vector.
+
+    Same facts as ``build_search_text``, each clipped to its first
+    ``VECTOR_FACT_WORDS`` words. MiniLM reads only ~254 tokens, so unclipped,
+    one paragraph-sized fact fills the window and the rest never reach the
+    vector. Clipped, all ten get a share (issue #49: hit@5 0.75 -> 0.91 on the
+    live recall eval).
+    """
+    clipped = [" ".join(t.split()[:VECTOR_FACT_WORDS]) for t in _top_fact_texts(entity, now)]
+    return ". ".join([f"[{entity.type}] {entity.id}", *clipped])
+
+
+def long_fact_warning(text: str) -> str | None:
+    """A note for the caller when a fact is too long to search well, else None."""
+    words = len(text.split())
+    if words <= LONG_FACT_WORDS:
+        return None
+    return (
+        f"fact is {words} words; only the first {VECTOR_FACT_WORDS} reach the "
+        f"search vector. Store one short claim per fact and split the rest."
+    )
 
 
 def mark_superseded(

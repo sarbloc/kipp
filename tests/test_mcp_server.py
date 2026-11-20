@@ -218,6 +218,14 @@ class TestMemoryEventResolve:
             mcp_server.memory_event_resolve(event_id="x", domain="bogus")
 
 
+def test_memory_store_warns_on_long_fact(mcp_env):
+    assert "warning" not in mcp_server.memory_store("person", "al", "short fact")
+    out = mcp_server.memory_store("person", "al", " ".join(["word"] * 50))
+    assert "50 words" in out["warning"]
+    # The fact is still stored whole.
+    assert any(len(f["text"].split()) == 50 for f in mcp_server.memory_get("person:al")["facts"])
+
+
 # ── bi-temporal supersession via the MCP surface (issue #21) ──
 
 class TestMemoryStoreSupersession:
