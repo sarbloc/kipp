@@ -28,10 +28,13 @@ For each domain:
       - entity_type is one of person | project | tool | preference | decision;
       - entity_id is a short, stable, lowercase slug (`alice`, `billing-api`);
       - content is ONE short, self-contained claim, ideally under 25 words,
-        with the subject and key words first. Search reads only the first
-        16 words of each fact, so split a paragraph into separate facts
-        rather than storing it whole. memory_store returns a `warning` for
-        any fact over 40 words.
+        with the subject and key words first. Each fact is searched on its
+        own, so split a paragraph into separate facts rather than storing
+        it whole. memory_store returns a `warning` for any fact over 40
+        words: re-store it as shorter facts.
+      - If memory_store returns `oversized`, the entity is too broad. Put
+        later facts on a topic entity named `<id>-<topic>` (e.g.
+        `alice-health` for `person:alice`), reusing existing topic ids.
       - When a fact replaces an older one ("moved to Berlin" after "lives in
         London"), pass `supersedes` with the old fact's exact text.
    d. Call memory_event_resolve({ event_id, domain, created_entity_id }) for

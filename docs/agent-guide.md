@@ -86,10 +86,14 @@ is filed onto that entity automatically by `memory_extract`:
 
 ### Writing good facts
 
-- **One sentence, one fact, key words first.** Search reads only the first 16
-  words of each of an entity's top 10 facts. The rest of a paragraph-long fact
-  is stored and returned, but search never sees it. `memory_store` returns a
-  `warning` for any fact over 40 words.
+- **One sentence, one fact, key words first.** Each fact is searched on its
+  own, so a fact that mixes topics matches none of them well. The entity's
+  own vector reads only the first 16 words of each of its top 10 facts.
+  `memory_store` returns a `warning` for any fact over 40 words.
+- **Narrow entities.** Past 30 current facts, `memory_store` returns an
+  `oversized` note. File new facts on a topic entity named `<id>-<topic>`
+  instead (`person:alice-health`, `person:alice-career`). Keep using the same
+  topic ids once they exist.
 - **Self-contained.** Write "Alice leads the billing team", not "She leads
   it".
 - **Stable ids.** `project:billing-api` every time. A second id for the same

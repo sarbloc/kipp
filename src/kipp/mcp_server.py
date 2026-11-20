@@ -30,7 +30,14 @@ from kipp.client import (
 )
 from kipp.extract import MATCH_THRESHOLD
 from kipp.facts import write_entity
-from kipp.merge import compact, long_fact_warning, mark_superseded, merge
+from kipp.merge import (
+    compact,
+    current_fact_count,
+    long_fact_warning,
+    mark_superseded,
+    merge,
+    oversized_warning,
+)
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 from kipp.search import format_results, search_entities
@@ -95,7 +102,7 @@ def memory_store(
         entity_type: person | project | tool | preference | decision
         entity_id: short id (e.g. 'alice') or full id ('person:alice')
         content: the fact: one short, self-contained claim, key words first.
-            Search reads only the first 16 words of each fact; split longer
+            Each fact is searched on its own; split longer or mixed-topic
             text into separate facts.
         domain: shared | dev | personal (default shared)
         supersedes: text of an existing CURRENT fact that this
@@ -115,7 +122,10 @@ def memory_store(
     is deferred (issue #26).
 
     Returns the entity id, its current fact count, (when supersession fired)
-    the superseded fact's text, and a ``warning`` when the fact is over 40 words.
+    the superseded fact's text, a ``warning`` when the fact is over 40 words
+    (re-store it as shorter facts), and an ``oversized`` note when the entity
+    holds over 30 current facts (file later facts on a topic entity named
+    ``<id>-<topic>``; nothing is trimmed).
     """
     _validate_domain(domain)
     client = get_client()
@@ -157,13 +167,17 @@ def memory_store(
     merged = merge(existing, [new_fact], embedder, now=now)
     write_entity(client, merged, embedder, domain=domain)
 
-    current_facts = sum(1 for f in merged.facts if f.is_current)
-    result: dict[str, Any] = {"id": full_id, "facts": current_facts, "domain": domain}
+    result: dict[str, Any] = {"id": full_id, "facts": current_fact_count(merged), "domain": domain}
     if supersedes:
         result["superseded"] = superseded
     warning = long_fact_warning(content)
     if warning:
         result["warning"] = warning
+    # Separate key from ``warning``: agents told to re-store shorter facts on a
+    # ``warning`` must not do that for an oversized entity.
+    oversized = oversized_warning(merged)
+    if oversized:
+        result["oversized"] = oversized
     return result
 
 

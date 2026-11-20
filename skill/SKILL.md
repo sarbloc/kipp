@@ -57,7 +57,8 @@ kipp search "<query>"
 | `kipp get <entity_id>` | Show entity detail |
 | `kipp list [--type T]` | List all entities |
 | `kipp delete <entity_id>` | Delete entity |
-| `kipp compact [--max-facts N]` | Prune overgrown entities |
+| `kipp oversized [--domain D] [--threshold N]` | List entities due a split into topic entities |
+| `kipp compact [--max-facts N]` | Delete all but each entity's top facts (lossy, manual) |
 | `kipp expire` | GC expired events and facts |
 | `kipp export [--format json\|md]` | Backup entities |
 | `kipp import <file>` | Restore from backup |

@@ -13,7 +13,8 @@ from kipp.models import Entity, Fact
 # ── Constants ────────────────────────────────────────────
 
 DUPE_THRESHOLD = 0.9
-MAX_FACTS = 20
+MAX_FACTS = 20           # `kipp compact` default only; nothing enforces it (#52)
+SPLIT_THRESHOLD = 30     # current facts above which an entity should be split
 HALF_LIFE_DAYS = 30
 SEARCH_TEXT_FACTS = 10   # facts in an entity's search text and vector text
 VECTOR_FACT_WORDS = 16   # words of each fact embedded (issue #49)
@@ -224,6 +225,25 @@ def long_fact_warning(text: str) -> str | None:
     return (
         f"fact is {words} words; only the first {VECTOR_FACT_WORDS} reach the "
         f"search vector. Store one short claim per fact and split the rest."
+    )
+
+
+def current_fact_count(entity: Entity) -> int:
+    return sum(1 for f in entity.facts if f.is_current)
+
+
+def oversized_warning(entity: Entity, threshold: int = SPLIT_THRESHOLD) -> str | None:
+    """A note for the caller when ``entity`` should be split, else None.
+
+    Size is a signal, not a cap (#52): nothing is trimmed. Only current facts
+    count, so superseded history kept for ``as_of`` never triggers it.
+    """
+    n = current_fact_count(entity)
+    if n <= threshold:
+        return None
+    return (
+        f"{entity.id} has {n} current facts (over {threshold}). File new facts "
+        f"on a narrower topic entity, e.g. {entity.id}-<topic>."
     )
 
 

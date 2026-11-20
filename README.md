@@ -102,8 +102,11 @@ already running on port 6333.
 - **Merge:** a new fact within cosine 0.9 of an existing one is a duplicate. The
   existing fact's hit count goes up and the longer wording wins. Anything else
   is appended.
-- **Compaction:** `kipp compact` trims any entity above 20 facts to the top 20
-  by frequency × recency × permanence.
+- **No fact cap:** every fact is searched on its own, so entities can grow.
+  Past 30 current facts, writes return an `oversized` note suggesting a split
+  into topic entities (`kipp oversized` lists them). `kipp compact` exists to
+  trim to the top 20 by frequency × recency × permanence, but it deletes
+  facts and nothing runs it.
 
 The `shared` domain uses the bare collection names (`entities`, `events`,
 `decisions`); the others are prefixed (`dev_entities`, ...).

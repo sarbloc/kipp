@@ -193,3 +193,25 @@ def test_reindex_rebuilds_from_fresh_facts_when_a_store_lands_mid_pass(client, e
     assert p.vector == pytest.approx(emb.embed(build_vector_text(new, now=NOW)))
     assert "Berlin" in p.payload["search_text"] and "London" not in p.payload["search_text"]
     assert [f.text for f in get_entity(client, "person:a", domain="dev").facts] == ["lives in Berlin"]
+
+
+def test_cli_oversized_lists_every_domain_by_size(client, emb, monkeypatch):
+    monkeypatch.setattr(cli_mod, "get_client", lambda: client)
+    big = _entity("person:big", 5)
+    big.facts += [Fact(text=f"old {i}", added="2026-01-01", source="t",
+                       superseded_at="2026-02-01") for i in range(5)]
+    upsert_entity(client, big, emb.embed("x"), domain="personal")
+    upsert_entity(client, _entity("project:mid", 4), emb.embed("x"), domain="dev")
+    upsert_entity(client, _entity("project:small", 3), emb.embed("x"), domain="shared")
+
+    res = CliRunner().invoke(cli_mod.main, ["oversized", "--threshold", "3"])
+
+    assert res.exit_code == 0, res.output
+    lines = res.output.splitlines()
+    assert [l.split() for l in lines] == [
+        ["5", "personal", "person:big"],  # superseded history not counted
+        ["4", "dev", "project:mid"],
+    ]
+
+    res = CliRunner().invoke(cli_mod.main, ["oversized", "--domain", "shared", "--threshold", "3"])
+    assert "No entities over 3 current facts." in res.output

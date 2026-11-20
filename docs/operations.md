@@ -53,7 +53,8 @@ your MCP client's `env` block, and `~/.config/kipp/env` for the timers.
 
 ```bash
 kipp expire                  # delete events past 30 days and facts past their expiry date
-kipp compact                 # trim entities that are over the 20-fact cap
+kipp oversized               # list entities over 30 current facts, all domains
+kipp compact                 # lossy: delete all but each entity's top 20 facts
 kipp stats                   # point count for every collection
 kipp reindex                 # rebuild search vectors and fact points from stored facts
 ```
@@ -81,9 +82,18 @@ code it started with. Restart it on the new release before reindexing, or
 reindex again after it restarts, so entities it writes in the meantime aren't
 left without fact points.
 
-Writes don't compact, so an entity can grow past 20 facts until `compact`
-runs. Run `expire` daily (see [systemd timers](#systemd-timers)) and
-`compact --domain all` now and then, for example weekly from cron.
+Run `expire` daily (see [systemd timers](#systemd-timers)).
+
+There is no fact cap (issue #52). Since every fact is searched on its own, a
+big entity doesn't hurt recall much, but it does bloat `memory_get` and every
+agent's context. Once an entity passes 30 current facts, `memory_store`
+returns an `oversized` note and `kipp store` prints one: split it into topic
+entities named `<id>-<topic>` (`person:alice-health`, `person:alice-career`).
+Superseded facts don't count towards the 30. `kipp oversized` lists every
+entity over the line.
+
+`compact` still exists but deletes facts, so nothing schedules it. Use it
+only after a backup, and only when losing the lowest-scored facts is fine.
 
 ## Recall evaluation
 

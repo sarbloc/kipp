@@ -85,14 +85,15 @@ The CLI surface is unchanged: existing commands default to `domain="shared"` via
 ### Core algorithms (all deterministic, no LLM)
 
 - **Merge:** New facts compared by cosine similarity. >= 0.9 = duplicate (increment hit_count, keep longer text). < 0.9 = new fact appended.
-- **Compaction:** Triggered when facts > 20. Score = `frequency × recency × permanence`. Keep top 20.
+- **Size:** No cap (#52). Past `SPLIT_THRESHOLD` (30) current facts, `memory_store` returns an `oversized` note (separate from `warning`) suggesting topic entities named `<id>-<topic>`; `kipp oversized` lists them. `kipp compact` (keep top `MAX_FACTS` by `frequency × recency × permanence`) is manual and lossy; nothing schedules it.
 - **Extraction:** An event opening with a `[type:id]` tag routes all its sentences to that entity if it exists; otherwise it stays unextracted for the LLM agent to create. Untagged events are cosine-matched (per fact, 0.32) only with `match_untagged` / `--match-untagged` — off by default because it misattributed most facts (#33). Nothing is auto-created as an entity.
 
 ### Constants
 
 ```python
 DUPE_THRESHOLD = 0.9
-MAX_FACTS = 20
+MAX_FACTS = 20          # kipp compact default only
+SPLIT_THRESHOLD = 30
 EVENT_TTL_DAYS = 30
 HALF_LIFE_DAYS = 30
 ```

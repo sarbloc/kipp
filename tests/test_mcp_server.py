@@ -226,6 +226,17 @@ def test_memory_store_warns_on_long_fact(mcp_env):
     assert any(len(f["text"].split()) == 50 for f in mcp_server.memory_get("person:al")["facts"])
 
 
+def test_memory_store_flags_oversized_entity_separately(mcp_env, monkeypatch):
+    real = mcp_server.oversized_warning
+    monkeypatch.setattr(mcp_server, "oversized_warning", lambda e: real(e, threshold=2))
+    for text in ("likes tea", "lives in Leeds"):
+        out = mcp_server.memory_store("person", "al", text)
+        assert "oversized" not in out
+    out = mcp_server.memory_store("person", "al", "plays chess on Sundays")
+    assert "person:al has 3 current facts" in out["oversized"]
+    assert "warning" not in out  # a short fact: no re-store prompt
+
+
 def test_memory_store_indexes_facts_in_its_domain(mcp_env):
     mcp_server.memory_store("person", "al", "likes tea", domain="dev")
     mcp_server.memory_store("person", "al", "lives in Leeds", domain="dev")
