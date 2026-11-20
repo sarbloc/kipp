@@ -155,7 +155,10 @@ def _reindex_point(
         if not fresh or fresh[0].payload.get("facts") == point.payload.get("facts"):
             return
         point = fresh[0]
+    # Qdrant has no compare-and-set, so a writer hitting this one entity on every
+    # attempt can still win the last race. Stop loudly rather than continue: the
+    # entity's vector may now be stale, and a re-run (or its next write) fixes it.
     raise RuntimeError(
-        f"reindex: {coll}/{point.payload.get('entity_id')} kept changing during "
-        f"{REINDEX_ATTEMPTS} attempts; re-run kipp reindex"
+        f"reindex: {coll}/{point.payload.get('entity_id')} changed on each of "
+        f"{REINDEX_ATTEMPTS} attempts, so its vector may be stale; re-run kipp reindex"
     )
