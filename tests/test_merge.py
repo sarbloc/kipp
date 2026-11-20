@@ -11,13 +11,16 @@ from kipp.merge import (
     compact,
     drop_expired,
     find_duplicate,
+    current_fact_count,
     long_fact_warning,
     mark_superseded,
     merge,
+    oversized_warning,
     fact_score,
     DUPE_THRESHOLD,
     LONG_FACT_WORDS,
     MAX_FACTS,
+    SPLIT_THRESHOLD,
     VECTOR_FACT_WORDS,
 )
 
@@ -289,6 +292,21 @@ def test_long_fact_warning():
     assert long_fact_warning(" ".join(["w"] * LONG_FACT_WORDS)) is None
     msg = long_fact_warning(" ".join(["w"] * (LONG_FACT_WORDS + 1)))
     assert msg is not None and f"{LONG_FACT_WORDS + 1} words" in msg
+
+
+def test_oversized_warning_counts_only_current_facts():
+    e = Entity(id="person:a", type="person")
+    e.facts = [_fact(f"fact {i}") for i in range(SPLIT_THRESHOLD)]
+    e.facts += [_fact(f"old {i}", superseded_at="2026-01-01") for i in range(10)]
+    assert current_fact_count(e) == SPLIT_THRESHOLD
+    assert oversized_warning(e) is None  # at the threshold, history ignored
+
+    e.facts.append(_fact("one more"))
+    msg = oversized_warning(e)
+    assert msg is not None
+    assert f"{SPLIT_THRESHOLD + 1} current facts" in msg
+    assert "person:a-<topic>" in msg
+    assert oversized_warning(e, threshold=SPLIT_THRESHOLD + 1) is None
 
 
 # ── bi-temporal Fact predicates (issue #21) ──────────────

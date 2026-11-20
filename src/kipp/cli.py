@@ -25,7 +25,14 @@ from kipp.client import (
 from kipp.extract import MATCH_THRESHOLD
 from kipp.maintenance import compact_domain, expire_events, expire_facts, reindex_domain
 from kipp.facts import write_entity
-from kipp.merge import long_fact_warning, mark_superseded, merge
+from kipp.merge import (
+    SPLIT_THRESHOLD,
+    current_fact_count,
+    long_fact_warning,
+    mark_superseded,
+    merge,
+    oversized_warning,
+)
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 
@@ -115,8 +122,7 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
 
     write_entity(client, merged, embedder)
 
-    current_facts = sum(1 for f in merged.facts if f.is_current)
-    click.echo(f"Stored: {full_id} ({current_facts} current facts)")
+    click.echo(f"Stored: {full_id} ({current_fact_count(merged)} current facts)")
     if supersedes:
         if superseded is not None:
             click.echo(f"  Superseded: {superseded!r}")
@@ -125,6 +131,9 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
     warning = long_fact_warning(content)
     if warning:
         click.echo(f"  Warning: {warning}", err=True)
+    oversized = oversized_warning(merged)
+    if oversized:
+        click.echo(f"  Oversized: {oversized}", err=True)
 
 
 @main.command()
@@ -422,11 +431,40 @@ _maintenance_domain = click.option(
 )
 
 
+@main.command()
+@click.option(
+    "--domain", type=click.Choice([*DOMAINS, "all"]), default="all",
+    show_default=True, help="Domain to check, or 'all'.",
+)
+@click.option(
+    "--threshold", type=click.IntRange(min=1), default=SPLIT_THRESHOLD,
+    show_default=True, help="Flag entities with more current facts than this.",
+)
+def oversized(domain: str, threshold: int):
+    """List entities that should be split into topic entities. Read-only."""
+    client = get_client()
+    rows = [
+        (current_fact_count(e), d, e.id)
+        for d in _resolve_domains(domain)
+        for e in scroll_entities(client, domain=d)
+        if current_fact_count(e) > threshold
+    ]
+    if not rows:
+        click.echo(f"No entities over {threshold} current facts.")
+        return
+    for n, d, eid in sorted(rows, key=lambda r: (-r[0], r[1], r[2])):
+        click.echo(f"{n:>5}  {d:<9} {eid}")
+
+
 @main.command(name="compact")
 @click.option("--max-facts", default=20, help="Max facts per entity")
 @_maintenance_domain
 def compact_cmd(max_facts: int, domain: str):
-    """Run compaction on all entities exceeding the facts limit."""
+    """Delete all but the top facts of every entity over the limit. Lossy.
+
+    Not scheduled anywhere: split oversized entities instead (see
+    ``kipp oversized``). Take a backup first.
+    """
     client = get_client()
     embedder = _get_embedder()
     now = datetime.utcnow()
