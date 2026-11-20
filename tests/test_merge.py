@@ -252,6 +252,18 @@ class TestBuildSearchText:
         assert high_pos < low_pos
 
 
+    def test_excludes_superseded_facts(self):
+        # Superseded facts must not feed the search vector (issue #21).
+        entity = Entity(id="person:alice", type="person")
+        entity.facts = [
+            _fact("lives in Berlin"),
+            _fact("lives in London", superseded_at="2026-03-01", superseded_by="lives in Berlin"),
+        ]
+        text = build_search_text(entity, now=NOW)
+        assert "lives in Berlin" in text
+        assert "London" not in text
+
+
 # ── build_vector_text / long_fact_warning ────────────────
 
 class TestBuildVectorText:
@@ -277,17 +289,6 @@ def test_long_fact_warning():
     assert long_fact_warning(" ".join(["w"] * LONG_FACT_WORDS)) is None
     msg = long_fact_warning(" ".join(["w"] * (LONG_FACT_WORDS + 1)))
     assert msg is not None and f"{LONG_FACT_WORDS + 1} words" in msg
-
-    def test_excludes_superseded_facts(self):
-        # Superseded facts must not feed the search vector (issue #21).
-        entity = Entity(id="person:alice", type="person")
-        entity.facts = [
-            _fact("lives in Berlin"),
-            _fact("lives in London", superseded_at="2026-03-01", superseded_by="lives in Berlin"),
-        ]
-        text = build_search_text(entity, now=NOW)
-        assert "lives in Berlin" in text
-        assert "London" not in text
 
 
 # ── bi-temporal Fact predicates (issue #21) ──────────────

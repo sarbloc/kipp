@@ -100,6 +100,9 @@ class TestFactWindow:
     def test_clipped_from_vector_text(self):
         assert fact_window(self.full, self.vec, "seven", words, window=50) == "out"
 
+    def test_whitespace_in_fact_or_text_is_normalised(self):
+        assert fact_window("a  b\nc d", "a b c d", "b\nc", words, window=50) == "in"
+
     def test_case_insensitive_and_missing(self):
         assert fact_window(self.full, self.vec, "TWO", words, window=3) == "in"
         assert fact_window(self.full, self.vec, "eight", words, window=3) == "unknown"

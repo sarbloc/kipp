@@ -105,9 +105,10 @@ def fact_window(
     clipped off or truncated before the model reads it. "unknown": not in the
     top facts at all (it may rank below them, or the substring is wrong).
     """
-    needle = fact.lower()
-    if needle not in search_text.lower():
+    needle = " ".join(fact.lower().split())
+    if needle not in " ".join(search_text.lower().split()):
         return "unknown"
+    # build_vector_text collapses each fact's whitespace; match it the same way.
     start = vector_text.lower().find(needle)
     return "in" if start >= 0 and count_tokens(vector_text[:start]) < window else "out"
 
