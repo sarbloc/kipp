@@ -49,6 +49,10 @@ class TestLoadCases:
 
     @pytest.mark.parametrize("line, msg", [
         ("{not json", "invalid JSON"),
+        ("null", "JSON object"),
+        ("[]", "JSON object"),
+        ('{"query": "q", "expected": 42}', "'expected'"),
+        ('{"query": "q", "expected": {"person:a": 1}}', "'expected'"),
         ('{"expected": "person:a"}', "'query'"),
         ('{"query": "q", "expected": "alice"}', "'expected'"),
         ('{"query": "q", "expected": []}', "'expected'"),

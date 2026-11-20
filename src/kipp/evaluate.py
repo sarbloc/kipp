@@ -59,13 +59,19 @@ def load_cases(path: Path) -> list[Case]:
             obj = json.loads(raw)
         except json.JSONDecodeError as e:
             raise ValueError(f"{path}:{n}: invalid JSON ({e.msg})") from e
+        if not isinstance(obj, dict):
+            raise ValueError(f"{path}:{n}: each line must be a JSON object")
         query = obj.get("query")
         expected = obj.get("expected")
         if isinstance(expected, str):
             expected = [expected]
         if not isinstance(query, str) or not query.strip():
             raise ValueError(f"{path}:{n}: 'query' must be a non-empty string")
-        if not expected or not all(isinstance(e, str) and ":" in e for e in expected):
+        if (
+            not isinstance(expected, list)
+            or not expected
+            or not all(isinstance(e, str) and ":" in e for e in expected)
+        ):
             raise ValueError(f"{path}:{n}: 'expected' must be an id like 'person:alice' or a list of them")
         domain = obj.get("domain", "shared")
         if domain not in DOMAINS:
