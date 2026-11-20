@@ -55,7 +55,7 @@ your MCP client's `env` block, and `~/.config/kipp/env` for the timers.
 kipp expire                  # delete events past 30 days and facts past their expiry date
 kipp compact                 # trim entities that are over the 20-fact cap
 kipp stats                   # point count for every collection
-kipp reindex                 # rebuild every entity's search vector from its facts
+kipp reindex                 # rebuild search vectors and fact points from stored facts
 ```
 
 `expire`, `compact` and `reindex` default to the `shared` domain. Pass
@@ -67,6 +67,19 @@ to a release that changes how vectors are built, take a backup and run
 `reindex` never modifies facts. Since issue #49, each entity's vector reads
 the first 16 words of each of its top 10 facts. The full text is still stored,
 returned and matched by keyword search.
+
+Each fact also has its own point in its domain's `facts` collection
+(`facts`, `dev_facts`, `personal_facts`). Search scores each entity by the
+better of its entity vector and its best-matching fact, so one fact among many
+still finds its entity. Fact points are derived from the entity and rebuilt on
+every write. `kipp reindex` backfills them for entities written before they
+existed and deletes points whose entity is gone. Until a domain has been
+reindexed, its search uses entity vectors alone.
+
+A long-running process (an MCP server, for example) writes entities with the
+code it started with. Restart it on the new release before reindexing, or
+reindex again after it restarts, so entities it writes in the meantime aren't
+left without fact points.
 
 Writes don't compact, so an entity can grow past 20 facts until `compact`
 runs. Run `expire` daily (see [systemd timers](#systemd-timers)) and

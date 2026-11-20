@@ -228,7 +228,7 @@ def test_interrupted_apply_duplicates_but_never_loses(client, emb):
 
     import kipp.repair as repair_mod
 
-    real, calls = repair_mod.upsert_entity, {"n": 0}
+    real, calls = repair_mod.write_entity, {"n": 0}
 
     def flaky(*args, **kwargs):
         calls["n"] += 1
@@ -236,12 +236,12 @@ def test_interrupted_apply_duplicates_but_never_loses(client, emb):
             raise RuntimeError("simulated crash")
         return real(*args, **kwargs)
 
-    repair_mod.upsert_entity = flaky
+    repair_mod.write_entity = flaky
     try:
         with pytest.raises(RuntimeError):
             apply_repair(client, emb, "dev", entities, plan_repair(entities), NOW)
     finally:
-        repair_mod.upsert_entity = real
+        repair_mod.write_entity = real
 
     alice = [f.text for f in get_entity(client, "person:alice", domain="dev").facts]
     assert "Notice period is one month." in alice

@@ -21,11 +21,11 @@ from kipp.client import (
     qdrant_connection,
     scroll_entities,
     store_event,
-    upsert_entity,
 )
 from kipp.extract import MATCH_THRESHOLD
 from kipp.maintenance import compact_domain, expire_events, expire_facts, reindex_domain
-from kipp.merge import build_vector_text, long_fact_warning, mark_superseded, merge
+from kipp.facts import write_entity
+from kipp.merge import long_fact_warning, mark_superseded, merge
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 
@@ -113,8 +113,7 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
     new_fact = Fact(text=content, added=today, source="cli:store", valid_from=valid_from)
     merged = merge(existing, [new_fact], embedder, now=now)
 
-    vector = embedder.embed(build_vector_text(merged))
-    upsert_entity(client, merged, vector)
+    write_entity(client, merged, embedder)
 
     current_facts = sum(1 for f in merged.facts if f.is_current)
     click.echo(f"Stored: {full_id} ({current_facts} current facts)")
@@ -515,8 +514,7 @@ def import_cmd(file: str):
             existing = Entity(id=entity.id, type=entity.type)
 
         merged = merge(existing, entity.facts, embedder, now=now)
-        vector = embedder.embed(build_vector_text(merged))
-        upsert_entity(client, merged, vector)
+        write_entity(client, merged, embedder)
 
     click.echo(f"Imported {len(imported)} entities.")
 
