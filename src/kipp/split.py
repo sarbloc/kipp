@@ -178,12 +178,22 @@ def move_facts(
         result.target_facts = _current(target)
         return result
 
+    base_keys = {fact_key(f) for f in target.facts}
     fresh: Entity | None = source
-    for _ in range(MOVE_ATTEMPTS):
-        target.facts = [replace(f) for f in base]
+    landed: list[Fact] = []  # the selection the target was last written with
+    for attempt in range(MOVE_ATTEMPTS):
+        if attempt:
+            # Re-read, so a write to the target since our last one survives,
+            # and drop our copies the new selection no longer holds.
+            target = get_entity(client, target_id, domain=domain) or Entity(
+                id=target_id, type=target_type, parent=source_id,
+            )
+            stale = {fact_key(f) for f in landed} - {fact_key(f) for f in facts} - base_keys
+            target.facts = [f for f in target.facts if fact_key(f) not in stale]
         _land(target, facts)
         target.last_updated = now.isoformat()
         write_entity(client, target, embedder, domain=domain, now=now)
+        landed = facts
         # Re-read so a write that landed since the first read isn't clobbered.
         fresh = get_entity(client, source_id, domain=domain)
         if fresh is None:
@@ -199,8 +209,8 @@ def move_facts(
         )
 
     if fresh is not None:
-        # Remove exactly what the target now holds, by identity.
-        gone = {fact_key(f) for f in facts}
+        # Remove only what the target was written with, by identity.
+        gone = {fact_key(f) for f in landed}
         fresh.facts = [f for f in fresh.facts if fact_key(f) not in gone]
         fresh.last_updated = now.isoformat()
         write_entity(client, fresh, embedder, domain=domain, now=now)
@@ -216,24 +226,37 @@ def _land(target: Entity, facts: list[Fact]) -> None:
     A fact already on the target with the same identity was left there by an
     interrupted move (or filed twice). The pair becomes one fact keeping the
     stronger of each field, so no lifetime, validity or hit is lost.
+
+    A superseded fact whose text the target holds as a current fact (same
+    ``valid_from``) supersedes that copy: an interrupted move left it, and
+    the source has since retired the claim. Keeping it current would revive it.
     """
     held = {fact_key(f): i for i, f in enumerate(target.facts)}
+    live = {(f.text, f.valid_from): i for i, f in enumerate(target.facts) if f.is_current}
     for fact in facts:
         i = held.get(fact_key(fact))
+        if i is None and not fact.is_current:
+            i = live.get((fact.text, fact.valid_from))
         if i is None:
             held[fact_key(fact)] = len(target.facts)
             target.facts.append(replace(fact, embedding=None))
             continue
         twin = target.facts[i]
-        target.facts[i] = replace(
+        merged = replace(
             twin,
             added=min(twin.added, fact.added),
             last_seen=max(filter(None, [twin.last_seen, fact.last_seen]), default=None),
             hit_count=max(twin.hit_count, fact.hit_count),
             expires=longer_lifetime(twin.expires, fact.expires),
+            superseded_at=twin.superseded_at or fact.superseded_at,
             superseded_by=twin.superseded_by or fact.superseded_by,
             embedding=None,
         )
+        target.facts[i] = merged
+        held.pop(fact_key(twin), None)
+        held[fact_key(merged)] = i
+        if not merged.is_current:
+            live.pop((merged.text, merged.valid_from), None)
 
 
 def _current(entity: Entity, without: set | frozenset = frozenset()) -> int:

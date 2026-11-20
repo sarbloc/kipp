@@ -253,6 +253,87 @@ def test_move_gives_up_after_bounded_attempts_without_losing(client, emb, monkey
     assert _texts(get_entity(client, "person:alice-x", domain="personal")) == ["Counter."]
 
 
+def test_history_arriving_after_the_last_target_write_stays_on_source(client, emb, monkeypatch, caplog):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Lives in York.")]))
+    real = split_mod.write_entity
+    added = []
+
+    def add_history(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-home":
+            fresh = get_entity(client, "person:alice", domain="personal")
+            added.append(f"Lived in place {len(added)}.")
+            fresh.facts.append(_fact(added[-1], superseded_at="2026-01-01", superseded_by="Lives in York."))
+            real(client_, fresh, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", add_history)
+    move_facts(client, emb, "person:alice", "person:alice-home", ["Lives in York."], domain="personal", now=NOW)
+
+    assert "changed on each of 5 attempts" in caplog.text
+    source = _texts(get_entity(client, "person:alice", domain="personal"))
+    target = _texts(get_entity(client, "person:alice-home", domain="personal"))
+    assert source == [added[-1]]  # read after the last target write: never landed, so kept
+    assert sorted(source + target) == sorted(["Lives in York.", *added])
+
+
+def test_retry_keeps_a_write_to_the_target(client, emb, monkeypatch):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
+    real = split_mod.write_entity
+    raced = []
+
+    def race_both(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-work" and not raced:
+            raced.append(True)
+            target = get_entity(client, "person:alice-work", domain="personal")
+            target.facts.append(_fact("Desk on floor 3."))
+            real(client_, target, emb, domain="personal", now=NOW)
+            source = get_entity(client, "person:alice", domain="personal")
+            source.facts[0].hit_count = 7  # changes the selection: forces a retry
+            real(client_, source, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", race_both)
+    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+               domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-work", domain="personal")
+    assert sorted(_texts(target)) == ["Desk on floor 3.", "Works at Initech."]
+    assert next(f for f in target.facts if f.text == "Works at Initech.").hit_count == 7
+
+
+def test_resuming_after_the_source_superseded_the_fact_leaves_no_current_copy(client, emb, monkeypatch):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
+    real = split_mod.write_entity
+
+    def crash_on_source(client_, entity, *a, **kw):
+        if entity.id == "person:alice":
+            raise RuntimeError("killed")
+        real(client_, entity, *a, **kw)
+
+    monkeypatch.setattr(split_mod, "write_entity", crash_on_source)
+    with pytest.raises(RuntimeError):
+        move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+                   domain="personal", now=NOW)
+    monkeypatch.setattr(split_mod, "write_entity", real)
+    source = get_entity(client, "person:alice", domain="personal")
+    mark_superseded(source, "Works at Initech.", by="Works at Acme.", on_date="2026-11-20")
+    source.facts.append(_fact("Works at Acme."))
+    _seed(client, emb, source)
+
+    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+               domain="personal", now=NOW)
+
+    [moved] = get_entity(client, "person:alice-work", domain="personal").facts
+    assert (moved.text, moved.superseded_at, moved.superseded_by) == (
+        "Works at Initech.", "2026-11-20", "Works at Acme.",
+    )
+    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Works at Acme."]
+    points, _ = client.scroll(collection_name("personal", "facts"), limit=100, with_payload=True)
+    assert {(p.payload["entity_id"], p.payload["current"]) for p in points} == {
+        ("person:alice", True), ("person:alice-work", False),
+    }
+
+
 def test_existing_target_keeps_parent_and_facts_are_not_merged(client, emb):
     _seed(client, emb, _alice())
     _seed(client, emb, Entity(id="person:alice-work", type="person", parent="person:bob",
