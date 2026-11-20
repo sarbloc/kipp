@@ -8,146 +8,130 @@
 Memory for AI agents that keeps one current record per thing, not an
 ever-growing log. Local, deterministic, no LLM in the loop.
 
-Knowledge is stored as discrete entities upserted in place, so storage grows
-with the number of distinct things, not with time.
+- **One record per thing.** Knowledge lives in entities (`person:alice`,
+  `project:billing`) whose facts are updated in place. Storage grows with the
+  number of distinct things your agent knows about, not with time.
+- **Bounded.** Compaction trims each entity to its 20 best current facts,
+  ranked by how often, how recently and how permanently they were asserted.
+- **History kept.** A replaced fact is marked superseded, not deleted, so you
+  can ask what was true on a past date. Compaction drops superseded facts
+  first, so an entity that hits the cap loses its oldest history.
+- **Local and deterministic.** Qdrant in Docker plus a small local embedding
+  model. Merge, dedup, compaction and expiry are plain maths: no API calls, no
+  LLM, same input gives the same result.
+- **Works with any MCP client.** Claude Code, Claude Desktop, Cursor, Codex
+  CLI, or anything else that speaks MCP over stdio.
 
-> Renamed from `entity-memory`. The `memory` command still works as an alias,
-> and the old config paths and `ENTITY_MEMORY_CONFIG` are still read.
+## How it works
+
+Your agent does two things with KIPP during a conversation:
+
+1. **Recalls** with `memory_search` before answering questions about people,
+   projects or past decisions.
+2. **Records** what it learns, either straight onto an entity with
+   `memory_store`, or as a raw observation with `memory_event`.
+
+Events are a 30-day inbox. A periodic **extraction** pass files them onto
+entities. Events that open with a `[type:id]` tag are filed automatically. The
+rest are reviewed by an agent, which creates the entities they describe. KIPP
+never invents entities on its own; that judgement stays with the agent.
+
+[`docs/agent-guide.md`](docs/agent-guide.md) has the prompt that teaches an
+agent this loop.
+
+## Requirements
+
+- Docker (for Qdrant)
+- Python 3.11+ and [pipx](https://pipx.pypa.io/)
+- About 1 GB of disk to start: the Qdrant image plus the embedding model
+  (`all-MiniLM-L6-v2`, about 90 MB, downloaded from Hugging Face on first use)
+
+Developed and run on Linux. macOS should work. On Windows, use WSL.
 
 ## Quick start
 
 ```bash
-# Start Qdrant
-docker compose up -d
+git clone https://github.com/sarbloc/kipp.git
+cd kipp
 
-# Install
-pip install -e .
+# 1. Start Qdrant (localhost only, data in a named Docker volume)
+docker compose up -d --wait
 
-# Initialize collections
+# 2. Install the CLI and MCP server
+#    (if `kipp` is then "command not found", run `pipx ensurepath` and open a new shell)
+pipx install .
+
+# 3. Create the collections
 kipp init
 
-# Store a fact
-kipp store --type person --id alice --content "Manages the auth team"
-
-# Search
-kipp search "who handles authentication"
-
-# Log an observation
-kipp event "Task completed: built auth API. Alice reviewed."
-
-# Process events into entities
-kipp extract --all
+# 4. Smoke test. The first command downloads the embedding model.
+kipp store --type person --id alice --content "Leads the billing team"
+kipp search "who runs billing"
 ```
+
+`kipp search` should print `person:alice` as the top hit. A warning about
+unauthenticated requests to the HF Hub is harmless: the model is public, and
+once it's cached nothing is downloaded again.
+
+Then:
+
+5. **Connect your AI client:** [`docs/mcp-clients.md`](docs/mcp-clients.md)
+6. **Teach your agent to use it:** [`docs/agent-guide.md`](docs/agent-guide.md)
+7. **Set up expiry and backups:** [`docs/operations.md`](docs/operations.md)
+
+`scripts/install.sh` does steps 1–3 in one go, reusing a Qdrant that is
+already running on port 6333.
+
+## Docs
+
+| Page | What it covers |
+|------|----------------|
+| [mcp-clients.md](docs/mcp-clients.md) | Registering `kipp mcp` in Claude Code, Claude Desktop, Cursor, Codex CLI |
+| [agent-guide.md](docs/agent-guide.md) | System-prompt section, tools, tags, domains, the extraction loop |
+| [operations.md](docs/operations.md) | Configuration, expiry, compaction, backup and restore, systemd timers |
+| [MEMORY-SYSTEM-SPEC.md](MEMORY-SYSTEM-SPEC.md) | The original design spec |
+
+## Architecture
+
+- **Qdrant** stores nine collections: three **domains** (`shared`, `dev`,
+  `personal`) × three **kinds**:
+  - `entities`: long-term knowledge, upserted in place;
+  - `events`: raw observations, expire after 30 days;
+  - `decisions`: like entities, but never expire.
+- **all-MiniLM-L6-v2** embeds text locally (384 dimensions).
+- **Merge:** a new fact within cosine 0.9 of an existing one is a duplicate. The
+  existing fact's hit count goes up and the longer wording wins. Anything else
+  is appended.
+- **Compaction:** `kipp compact` trims any entity above 20 facts to the top 20
+  by frequency × recency × permanence.
+
+The `shared` domain uses the bare collection names (`entities`, `events`,
+`decisions`); the others are prefixed (`dev_entities`, ...).
 
 ## Upgrading from entity-memory
 
-The pip distribution changed name, so pipx sees a new app. Swap them, or
-`memory` keeps pointing at the old install and fails to import:
+KIPP was called `entity-memory`. The pip distribution changed name, so pipx
+treats it as a new app:
 
 ```bash
 pipx uninstall entity-memory
 pipx install -e .            # provides `kipp` and the `memory` alias
 ```
 
-`scripts/install.sh` does this for you. Existing `entity-memory-*` systemd
-units keep working, because they call `memory`, which is now the alias. To
-move to the new unit names, disable the old timers, remove their files from
-`~/.config/systemd/user/`, then install the `kipp-*` units as described under
-Maintenance.
+`scripts/install.sh` does this for you. The `memory` command, the old config
+paths and `ENTITY_MEMORY_CONFIG` all still work. Qdrant data and collection
+names are unchanged. To move installed systemd timers to the new unit names,
+see [`docs/operations.md`](docs/operations.md#systemd-timers).
 
-Qdrant data and collection names are unchanged.
+## OpenClaw
 
-## Architecture
-
-- **Qdrant** (Docker) — vector database for semantic search
-- **all-MiniLM-L6-v2** — local embeddings, 384 dims, no API calls
-- **Three collections**: `entities` (long-term knowledge), `events` (30-day rolling window), `decisions` (permanent)
-
-All operations are deterministic (no LLM calls). Deduplication, merging, and compaction use cosine similarity and scoring algorithms.
-
-## Configuration
-
-By default the CLI talks to a local Qdrant at `http://127.0.0.1:6333`. Override
-without any file via environment variables:
-
-- `QDRANT_URL` — Qdrant endpoint (highest precedence; no config file needed)
-- `QDRANT_API_KEY` — API key, if your Qdrant requires one
-- `KIPP_CONFIG` — path to a config JSON (overrides the default location)
-
-Or drop a config file at `~/.config/kipp/config.json` (honors
-`$XDG_CONFIG_HOME` when set to an absolute path):
-
-```json
-{
-  "qdrant": {
-    "url": "http://127.0.0.1:6333",
-    "api_key_env": "QDRANT_API_KEY"
-  }
-}
-```
-
-The pre-rename `~/.config/entity-memory/config.json` and the legacy
-`~/.openclaw/memory.json` are still read, in that order, after it.
-
-## Maintenance
-
-`kipp expire` deletes events past their 30-day TTL and facts past their
-`expires` date. `kipp compact` trims entities over the 20-fact cap. Both
-default to the `shared` domain; pass `--domain dev|personal|all` to widen.
-
-To run expiry nightly, install the systemd user units in `contrib/systemd/`:
-
-```bash
-cp contrib/systemd/kipp-expire.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now kipp-expire.timer
-```
-
-Put any Qdrant env vars (`QDRANT_URL`, `QDRANT_API_KEY`) in
-`~/.config/kipp/env`.
-
-### Backup and restore
-
-`kipp backup` takes a native Qdrant snapshot of every collection (all
-domains), downloads it to `~/backups/qdrant/<UTC stamp>/`, checks each file
-against the sha256 Qdrant reports, writes a `manifest.json` of point counts
-and digests, and deletes the server-side copy. Only the newest 3 backups are
-kept (`--keep`, `--dest` to change). A run that fails leaves nothing behind
-under a stamp name, so every stamp directory is a complete backup.
-
-Same disk as the data: this covers a bad migration or an accidental delete,
-not drive failure. Copy the directory elsewhere if you need that.
-
-Install the daily timer (04:45, after expiry) the same way:
-
-```bash
-cp contrib/systemd/kipp-backup.* ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now kipp-backup.timer
-```
-
-Restore one collection (replaces its contents):
-
-```bash
-curl -X POST "http://127.0.0.1:6333/collections/<name>/snapshots/upload?priority=snapshot" \
-     -H "api-key: $QDRANT_API_KEY" \
-     -F snapshot=@$HOME/backups/qdrant/<stamp>/<name>.snapshot
-```
-
-## OpenClaw skill
-
-Install as a skill:
-```bash
-bash scripts/install.sh
-```
-
-See `skill/SKILL.md` for agent integration instructions.
+`skill/SKILL.md` is the OpenClaw skill manifest. Install with
+`bash scripts/install.sh`.
 
 ## Development
 
 ```bash
 pip install -e .
-python3 -m pytest tests/ -v
+docker compose up -d --wait   # the integration tests need Qdrant
+python3 -m pytest -q
 ```
-
-See `MEMORY-SYSTEM-SPEC.md` for the full specification.
