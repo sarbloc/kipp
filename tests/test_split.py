@@ -15,7 +15,7 @@ import kipp.split as split_mod
 from kipp.client import collection_name, delete_entity, ensure_collections, get_entity, list_children
 from kipp.embedder import MockEmbedder
 from kipp.export import export_json, import_json
-from kipp.facts import write_entity
+from kipp.facts import sync_fact_points, write_entity
 from kipp.merge import mark_superseded
 from kipp.models import Entity, Fact
 from kipp.split import (
@@ -69,6 +69,10 @@ def _fact(text, **kw):
 
 def _seed(client, emb, entity, domain="personal"):
     write_entity(client, entity, emb, domain=domain, now=NOW)
+
+
+def facts_mod_sync(client, entity, emb):
+    sync_fact_points(client, entity, emb, domain="personal")
 
 
 def _texts(entity):
@@ -237,21 +241,6 @@ def test_histories_ending_on_different_dates_stay_separate(client, emb):
     assert sorted(f.superseded_at or "" for f in target.facts) == ["", "2026-06-01", "2026-09-01"]
 
 
-def test_resume_matches_each_copy_to_its_own_fact(client, emb):
-    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
-        _fact("Said hello.", added="2026-01-01"), _fact("Said hello.", added="2026-02-01"),
-    ]))
-    _seed(client, emb, Entity(id="person:alice-x", type="person", facts=[
-        _fact("Said hello.", added="2026-01-01", superseded_at="2026-03-01"),
-        _fact("Said hello.", added="2026-02-01"),
-    ]))
-
-    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
-
-    target = get_entity(client, "person:alice-x", domain="personal")
-    assert [(f.added, f.superseded_at) for f in target.facts] == [("2026-01-01", "2026-03-01"), ("2026-02-01", None)]
-
-
 def test_fact_superseded_mid_move_lands_superseded(client, emb, monkeypatch):
     _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
     real = split_mod.write_entity
@@ -347,39 +336,6 @@ def test_retry_keeps_a_write_to_the_target(client, emb, monkeypatch):
     assert next(f for f in target.facts if f.text == "Works at Initech.").hit_count == 7
 
 
-def test_resuming_after_the_source_superseded_the_fact_leaves_no_current_copy(client, emb, monkeypatch):
-    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
-    real = split_mod.write_entity
-
-    def crash_on_source(client_, entity, *a, **kw):
-        if entity.id == "person:alice":
-            raise RuntimeError("killed")
-        real(client_, entity, *a, **kw)
-
-    monkeypatch.setattr(split_mod, "write_entity", crash_on_source)
-    with pytest.raises(RuntimeError):
-        move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
-                   domain="personal", now=NOW)
-    monkeypatch.setattr(split_mod, "write_entity", real)
-    source = get_entity(client, "person:alice", domain="personal")
-    mark_superseded(source, "Works at Initech.", by="Works at Acme.", on_date="2026-11-20")
-    source.facts.append(_fact("Works at Acme."))
-    _seed(client, emb, source)
-
-    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
-               domain="personal", now=NOW)
-
-    [moved] = get_entity(client, "person:alice-work", domain="personal").facts
-    assert (moved.text, moved.superseded_at, moved.superseded_by) == (
-        "Works at Initech.", "2026-11-20", "Works at Acme.",
-    )
-    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Works at Acme."]
-    points, _ = client.scroll(collection_name("personal", "facts"), limit=100, with_payload=True)
-    assert {(p.payload["entity_id"], p.payload["current"]) for p in points} == {
-        ("person:alice", True), ("person:alice-work", False),
-    }
-
-
 def test_history_does_not_retire_a_separate_assertion_on_the_target(client, emb):
     _seed(client, emb, Entity(id="person:alice", type="person", facts=[
         _fact("Lives in Leeds.", added="2026-03-01"),
@@ -397,43 +353,6 @@ def test_history_does_not_retire_a_separate_assertion_on_the_target(client, emb)
         ("Lives in Leeds.", "2026-03-01", True),
         ("Lives in York.", "2020-01-01", False),
     ]
-
-
-def test_resuming_after_the_target_superseded_the_copy_keeps_it_retired(client, emb, monkeypatch):
-    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
-    real = split_mod.write_entity
-
-    def crash_on_source(client_, entity, *a, **kw):
-        if entity.id == "person:alice":
-            raise RuntimeError("killed")
-        real(client_, entity, *a, **kw)
-
-    monkeypatch.setattr(split_mod, "write_entity", crash_on_source)
-    with pytest.raises(RuntimeError):
-        move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
-                   domain="personal", now=NOW)
-    monkeypatch.setattr(split_mod, "write_entity", real)
-    target = get_entity(client, "person:alice-work", domain="personal")
-    mark_superseded(target, "Works at Initech.", by="Works at Acme.", on_date="2026-11-20")
-    target.facts.append(_fact("Works at Acme."))
-    _seed(client, emb, target)
-
-    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
-               domain="personal", now=NOW)
-
-    target = get_entity(client, "person:alice-work", domain="personal")
-    assert [(f.text, f.is_current) for f in target.facts] == [
-        ("Works at Initech.", False), ("Works at Acme.", True),
-    ]
-    assert get_entity(client, "person:alice", domain="personal").facts == []
-
-
-def test_identical_facts_on_the_source_both_move(client, emb):
-    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
-        _fact("Said hello."), _fact("Said hello.", superseded_at="2026-05-01"), _fact("Said hello."),
-    ]))
-    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
-    assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 3
 
 
 def test_resuming_with_three_identical_copies_is_idempotent(client, emb, monkeypatch):
@@ -741,3 +660,112 @@ def test_cli_store_parent_must_exist(client, emb, monkeypatch):
     res = CliRunner().invoke(cli_mod.main, [*args, "person:alice"])
     assert res.exit_code == 0, res.output
     assert get_entity(client, "person:alice-x").parent == "person:alice"
+
+
+def _interrupt(client, emb, monkeypatch, *args):
+    """Run a move that dies right after writing the target."""
+    real = split_mod.write_entity
+
+    def crash_on_source(client_, entity, *a, **kw):
+        if entity.id == args[0]:
+            raise RuntimeError("killed")
+        real(client_, entity, *a, **kw)
+
+    monkeypatch.setattr(split_mod, "write_entity", crash_on_source)
+    with pytest.raises(RuntimeError):
+        move_facts(client, emb, *args, domain="personal", now=NOW)
+    monkeypatch.setattr(split_mod, "write_entity", real)
+
+
+@pytest.mark.parametrize("side", ["person:alice", "person:alice-work"])
+def test_a_copy_changed_before_the_rerun_leaves_a_duplicate_not_a_loss(client, emb, monkeypatch, side):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
+    _interrupt(client, emb, monkeypatch, "person:alice", "person:alice-work", ["Works at Initech."])
+    changed = get_entity(client, side, domain="personal")
+    mark_superseded(changed, "Works at Initech.", by="Works at Acme.", on_date="2026-11-20")
+    changed.facts.append(_fact("Works at Acme."))
+    _seed(client, emb, changed)
+
+    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+               domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-work", domain="personal")
+    source = get_entity(client, "person:alice", domain="personal")
+    initech = sorted(f.is_current for f in target.facts if f.text == "Works at Initech.")
+    assert initech == [False, True]  # both versions kept; the operator resolves it
+    assert "Works at Initech." not in _texts(source)
+    assert "Works at Acme." in _texts(source) + _texts(target)
+
+
+def test_a_requested_text_takes_current_facts_not_old_history(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Said hello."), _fact("Said hello.", superseded_at="2026-05-01"), _fact("Said hello."),
+    ]))
+    r = move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+    assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 2
+    assert [f.is_current for f in get_entity(client, "person:alice", domain="personal").facts] == [False]
+    # With no current occurrence left, the text selects its history.
+    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+    assert get_entity(client, "person:alice", domain="personal").facts == []
+    assert r.moved == ["Said hello."]
+
+
+@pytest.mark.parametrize("order", [("linux", "mac"), ("mac", "linux")])
+def test_history_of_a_reasserted_text_follows_its_replacement_in_any_order(client, emb, order):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Uses Linux.", added="2020-01-01", superseded_at="2023-01-01", superseded_by="Uses macOS."),
+        _fact("Uses macOS.", added="2023-01-01"),
+        _fact("Uses Linux.", added="2026-01-01"),
+    ]))
+    groups = {"linux": ("person:alice-linux", "Uses Linux."), "mac": ("person:alice-mac", "Uses macOS.")}
+    for name in order:
+        target, text = groups[name]
+        move_facts(client, emb, "person:alice", target, [text], domain="personal", now=NOW)
+
+    linux = get_entity(client, "person:alice-linux", domain="personal")
+    mac = get_entity(client, "person:alice-mac", domain="personal")
+    assert [(f.text, f.added) for f in linux.facts] == [("Uses Linux.", "2026-01-01")]
+    assert sorted((f.text, f.added) for f in mac.facts) == [("Uses Linux.", "2020-01-01"), ("Uses macOS.", "2023-01-01")]
+
+
+def test_rerun_repairs_the_index_after_a_crash_inside_the_source_write(client, emb):
+    _seed(client, emb, _alice())
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW)
+    # Put back a stale point, as if the source write died after its entity
+    # upsert but before its fact sync.
+    stale = get_entity(client, "person:alice", domain="personal")
+    stale.facts.append(_fact("Allergic to penicillin."))
+    facts_mod_sync(client, stale, emb)
+    assert "Allergic to penicillin." in _fact_point_texts(client, "personal", "person:alice")
+
+    r = move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+                   domain="personal", now=NOW)
+
+    assert r.already == ["Allergic to penicillin."]
+    assert "Allergic to penicillin." not in _fact_point_texts(client, "personal", "person:alice")
+
+
+def test_dry_run_rerun_writes_nothing(client, emb, monkeypatch):
+    _seed(client, emb, _alice())
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW)
+    monkeypatch.setattr(split_mod, "sync_fact_points", lambda *a, **k: pytest.fail("dry run wrote"))
+    monkeypatch.setattr(split_mod, "write_entity", lambda *a, **k: pytest.fail("dry run wrote"))
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW, apply=False)
+
+
+def test_move_lock_is_exclusive_per_domain(tmp_path, monkeypatch):
+    import fcntl
+
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    with split_mod.move_lock("personal"):
+        with open(tmp_path / "kipp-move-personal.lock", "a") as other:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with split_mod.move_lock("dev"):
+            pass
+    with open(tmp_path / "kipp-move-personal.lock", "a") as other:
+        fcntl.flock(other, fcntl.LOCK_EX | fcntl.LOCK_NB)
+

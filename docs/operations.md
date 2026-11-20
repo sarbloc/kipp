@@ -128,15 +128,26 @@ may appear only once.
 tool:
 
 - Facts match by exact text and move unchanged: dates, source and hit count.
-- Superseded facts follow the fact that replaced them (by `superseded_by`).
-  Unlinked history stays on the source.
+  A text takes its current facts, or its history if none is current.
+- Superseded facts follow the fact that replaced them (by `superseded_by`),
+  whichever group moves first. Unlinked history stays on the source, and so
+  does history whose replacement was later reworded by a merge (#26).
 - A target that doesn't exist is created with the type from its id and
   `parent` set to the source. `kipp get` on the source lists its children.
 - The target is written before the facts leave the source. If a run is
   interrupted, a fact can be on both, never on neither; run the same plan
-  again to finish. Facts already moved are reported as such.
+  again to finish. Facts already moved are reported as such, and the re-run
+  also repairs the search index.
+- On a re-run, a leftover copy merges with its original only if both are
+  unchanged (same text, dates, source and supersession). If either was
+  changed in between, you get a duplicate to clean up, never a lost fact.
 - Facts landing on an existing target are not similarity-merged, so a near
   duplicate stays a separate fact.
+- Moves in one domain take a lock, so two moves never clobber each other.
+  An ordinary `memory_store` doesn't: like any two KIPP writes to the same
+  entity, a store racing a move is last-writer-wins. Apply a split while
+  nothing else is writing that entity (pause the agent, or pick a quiet
+  moment).
 
 Deleting a parent leaves its children's `parent` pointing at nothing. Nothing
 follows parent links except `children` in `kipp get` and `memory_get`.
