@@ -29,14 +29,14 @@ from kipp.client import (
     get_unextracted_events,
     mark_event_extracted,
     scroll_entities,
-    upsert_entity,
 )
 from kipp.extract import (
     MATCH_THRESHOLD,
     build_entity_index,
     extract_events_with_index,
 )
-from kipp.merge import build_vector_text, merge
+from kipp.facts import write_entity
+from kipp.merge import merge
 from kipp.models import Fact
 
 DEFAULT_BATCH_SIZE = 200
@@ -126,10 +126,7 @@ def run_extraction(
                 entity, [Fact(text=sentence, added=today, source="extract")],
                 embedder, now=now,
             )
-            upsert_entity(
-                client, merged, embedder.embed(build_vector_text(merged)),
-                domain=domain,
-            )
+            write_entity(client, merged, embedder, domain=domain)
 
         # Mark extracted ONLY events that enriched an entity, per batch, so a
         # kill mid-run preserves completed batches. Fully-unmatched events stay

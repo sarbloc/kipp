@@ -226,6 +226,14 @@ def test_memory_store_warns_on_long_fact(mcp_env):
     assert any(len(f["text"].split()) == 50 for f in mcp_server.memory_get("person:al")["facts"])
 
 
+def test_memory_store_indexes_facts_in_its_domain(mcp_env):
+    mcp_server.memory_store("person", "al", "likes tea", domain="dev")
+    mcp_server.memory_store("person", "al", "lives in Leeds", domain="dev")
+    pts, _ = mcp_env.scroll("dev_facts", limit=10, with_payload=True)
+    assert sorted(p.payload["text"] for p in pts) == ["likes tea", "lives in Leeds"]
+    assert mcp_env.scroll("facts", limit=10)[0] == []
+
+
 # ── bi-temporal supersession via the MCP surface (issue #21) ──
 
 class TestMemoryStoreSupersession:

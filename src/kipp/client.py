@@ -27,6 +27,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -38,7 +39,7 @@ from qdrant_client.models import (
 from kipp.models import Entity, Event, Fact
 
 DOMAINS = ["shared", "dev", "personal"]
-COLLECTION_KINDS = ["entities", "events", "decisions"]
+COLLECTION_KINDS = ["entities", "events", "decisions", "facts"]
 VECTOR_SIZE = 384
 
 
@@ -169,25 +170,55 @@ def ensure_collections(client: QdrantClient) -> list[str]:
     Returns the list of collection names that were freshly created.
     """
     created = []
-    for name in ALL_COLLECTIONS:
-        if not client.collection_exists(name):
-            client.create_collection(
-                collection_name=name,
-                vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
-            )
-            client.create_payload_index(
-                collection_name=name,
-                field_name="search_text",
-                field_schema=TextIndexParams(
-                    type="text",
-                    tokenizer=TokenizerType.WORD,
-                    min_token_len=2,
-                ),
-            )
-            client.create_payload_index(name, "type", field_schema=PayloadSchemaType.KEYWORD)
-            client.create_payload_index(name, "entity_id", field_schema=PayloadSchemaType.KEYWORD)
+    for domain in DOMAINS:
+        for kind in COLLECTION_KINDS:
+            name = collection_name(domain, kind)
+            if client.collection_exists(name):
+                continue
+            if kind == "facts":
+                ensure_fact_collection(client, domain)
+            else:
+                _create_record_collection(client, name)
             created.append(name)
     return created
+
+
+def _create_record_collection(client: QdrantClient, name: str) -> None:
+    client.create_collection(
+        collection_name=name,
+        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE),
+    )
+    client.create_payload_index(
+        collection_name=name,
+        field_name="search_text",
+        field_schema=TextIndexParams(
+            type="text",
+            tokenizer=TokenizerType.WORD,
+            min_token_len=2,
+        ),
+    )
+    client.create_payload_index(name, "type", field_schema=PayloadSchemaType.KEYWORD)
+    client.create_payload_index(name, "entity_id", field_schema=PayloadSchemaType.KEYWORD)
+
+
+def ensure_fact_collection(client: QdrantClient, domain: str, size: int = VECTOR_SIZE) -> str:
+    """Create the domain's per-fact search collection and its indexes if missing."""
+    coll = collection_name(domain, "facts")
+    if not client.collection_exists(coll):
+        try:
+            client.create_collection(
+                collection_name=coll,
+                vectors_config=VectorParams(size=size, distance=Distance.COSINE),
+            )
+        except Exception:
+            # Another process created it first (both saw it missing): fine.
+            if not client.collection_exists(coll):
+                raise
+        # Index creation is idempotent, so a racing creator repeating it is harmless.
+        client.create_payload_index(coll, "entity_id", field_schema=PayloadSchemaType.KEYWORD)
+        client.create_payload_index(coll, "type", field_schema=PayloadSchemaType.KEYWORD)
+        client.create_payload_index(coll, "current", field_schema=PayloadSchemaType.BOOL)
+    return coll
 
 
 def entity_point_id(entity_id: str) -> str:
@@ -304,9 +335,24 @@ def delete_entity(
             continue
         points = client.retrieve(collection_name=coll, ids=[point_id], with_payload=False)
         if points:
+            # Fact points go first. If a store re-creates the entity mid-delete,
+            # the worst case is orphaned fact points (skipped by search, pruned
+            # by reindex), never a live entity stripped of its index.
+            _delete_fact_points(client, entity_id, domain)
             client.delete(collection_name=coll, points_selector=[point_id])
             return True
     return False
+
+
+def _delete_fact_points(client: QdrantClient, entity_id: str, domain: str) -> None:
+    coll = collection_name(domain, "facts")
+    if client.collection_exists(coll):
+        client.delete(
+            collection_name=coll,
+            points_selector=FilterSelector(filter=Filter(
+                must=[FieldCondition(key="entity_id", match=MatchValue(value=entity_id))],
+            )),
+        )
 
 
 def scroll_entities(

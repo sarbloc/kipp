@@ -27,10 +27,10 @@ from kipp.client import (
     mark_event_extracted,
     scroll_entities,
     store_event,
-    upsert_entity,
 )
 from kipp.extract import MATCH_THRESHOLD
-from kipp.merge import build_vector_text, compact, long_fact_warning, mark_superseded, merge
+from kipp.facts import write_entity
+from kipp.merge import compact, long_fact_warning, mark_superseded, merge
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 from kipp.search import format_results, search_entities
@@ -155,8 +155,7 @@ def memory_store(
 
     new_fact = Fact(text=content, added=today, source="mcp:store", valid_from=valid_from)
     merged = merge(existing, [new_fact], embedder, now=now)
-    vector = embedder.embed(build_vector_text(merged))
-    upsert_entity(client, merged, vector, domain=domain)
+    write_entity(client, merged, embedder, domain=domain)
 
     current_facts = sum(1 for f in merged.facts if f.is_current)
     result: dict[str, Any] = {"id": full_id, "facts": current_facts, "domain": domain}
@@ -212,10 +211,10 @@ def memory_search(
     valid then are returned, later/replaced ones are not. Use ``memory_get`` for
     the full, unfiltered record including history.
 
-    Limitation: ranking uses the entity's current-state vector, so ``as_of``
-    projects history onto entities that current-state recall already surfaces —
-    it cannot retrieve one whose only matching term lives in a superseded fact
-    (no historical vector is kept). Historical-only findability is issue #25.
+    Each fact is searched on its own as well as the entity as a whole, and an
+    entity scores by whichever matches better, so a single matching fact
+    surfaces its entity. With ``as_of`` set, superseded facts are searched too,
+    so an entity can be found by a fact that has since been replaced.
     """
     _validate_domain(domain)
     client = get_client()

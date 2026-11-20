@@ -40,12 +40,13 @@ pytest tests/test_merge.py::test_name  # single test
 
 ## Architecture
 
-Collections are organised on two axes — **domain** (`shared`, `dev`, `personal`) × **kind** (`entities`, `events`, `decisions`). Nine collections in total. The `shared` domain reuses the legacy bare names (`entities`, `events`, `decisions`) so OpenClaw and any other existing caller continue to work unchanged. The `dev` and `personal` domains use namespaced names (`dev_entities`, `personal_events`, etc.).
+Collections are organised on two axes — **domain** (`shared`, `dev`, `personal`) × **kind** (`entities`, `events`, `decisions`, `facts`). Twelve collections in total. The `shared` domain reuses the legacy bare names (`entities`, `events`, `decisions`, `facts`) so OpenClaw and any other existing caller continue to work unchanged. The `dev` and `personal` domains use namespaced names (`dev_entities`, `personal_events`, etc.).
 
-The three kinds:
+The four kinds:
 - **`entities`** — long-term knowledge (person, project, tool, preference, decision). Upserted in place, never appended.
 - **`events`** — short-term observations (rolling 30-day window, auto-expires). Source material for entity extraction.
 - **`decisions`** — architectural/strategic choices. Same structure as entities but permanent, never expire.
+- **`facts`** — search index: one point per fact of every entity/decision, vector from `"[type] id: fact"`. Derived, never the record of truth; superseded facts stay indexed with `current: false`. Write entities through `facts.write_entity` (not `upsert_entity`) so the index stays in sync; `kipp reindex` backfills it.
 
 ### Key modules (`src/kipp/`)
 
@@ -57,7 +58,9 @@ The three kinds:
 | `models.py` | Dataclasses: Fact, Entity, Event |
 | `merge.py` | Merge, compact, dedup, search text (keyword payload) and vector text (clipped, issue #49) |
 | `extract.py` | Event → entity extraction (sentence splitting, matching) |
-| `search.py` | Vector + text + filter search fusion |
+| `facts.py` | Per-fact search points: `write_entity` (the one write path), sync, orphan prune, fact search |
+| `search.py` | Entity vector + fact vector (max) + text + filter search fusion |
+| `maintenance.py` | expire, compact, `reindex` (vectors, `search_text`, fact points) |
 | `export.py` | Export/import (JSON and markdown formats) |
 | `evaluate.py` | `kipp eval`: recall scoring against a JSONL known-answer case file |
 | `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |

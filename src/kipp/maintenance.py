@@ -13,7 +13,8 @@ from typing import Protocol
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointVectors
 
-from kipp.client import collection_name, point_to_entity, scroll_entities, upsert_entity
+from kipp.client import collection_name, point_to_entity, scroll_entities
+from kipp.facts import prune_orphan_fact_points, sync_fact_points, write_entity
 from kipp.merge import MAX_FACTS, build_search_text, build_vector_text, compact, drop_expired
 
 
@@ -62,10 +63,7 @@ def expire_facts(
         entity.facts = drop_expired(entity.facts, now)
         if len(entity.facts) < before:
             entity.last_updated = now.isoformat()
-            upsert_entity(
-                client, entity, embedder.embed(build_vector_text(entity, now=now)),
-                domain=domain,
-            )
+            write_entity(client, entity, embedder, domain=domain, now=now)
             updated += 1
     return updated
 
@@ -86,10 +84,7 @@ def compact_domain(
         if len(entity.facts) <= max_facts:
             continue
         entity = compact(entity, max_facts=max_facts, now=now)
-        upsert_entity(
-            client, entity, embedder.embed(build_vector_text(entity, now=now)),
-            domain=domain,
-        )
+        write_entity(client, entity, embedder, domain=domain, now=now)
         compacted += 1
     return compacted
 
@@ -97,13 +92,15 @@ def compact_domain(
 def reindex_domain(
     client: QdrantClient, embedder: EmbedderLike, domain: str, now: datetime,
 ) -> int:
-    """Rebuild the vector and ``search_text`` payload of every entity in ``domain``.
+    """Rebuild every entity's vector, ``search_text`` payload and fact points in ``domain``.
 
     Vectors are only rebuilt when an entity is written, so a change to how they
     are built (``build_vector_text``, issue #49) reaches stored entities only
-    through this pass. Facts are never rewritten: only the vector and the
-    ``search_text`` payload are set. See ``_reindex_point`` for how a store
-    that lands mid-pass is handled.
+    through this pass; the same goes for backfilling the per-fact index. Facts
+    are never rewritten: only the vector, the ``search_text`` payload and the
+    derived fact points are. See ``_reindex_point`` for how a store that lands
+    mid-pass is handled. Fact points left by entities that no longer exist are
+    pruned at the end.
 
     Returns the number of entities re-embedded.
     """
@@ -118,10 +115,11 @@ def reindex_domain(
                 collection_name=coll, limit=100, offset=offset, with_payload=True,
             )
             for p in points:
-                _reindex_point(client, embedder, coll, p, now)
+                _reindex_point(client, embedder, coll, p, now, domain=domain)
                 count += 1
             if offset is None:
                 break
+    prune_orphan_fact_points(client, domain, embedder)
     return count
 
 
@@ -130,8 +128,9 @@ REINDEX_ATTEMPTS = 5
 
 def _reindex_point(
     client: QdrantClient, embedder: EmbedderLike, coll: str, point, now: datetime,
+    *, domain: str,
 ) -> None:
-    """Set one point's vector and ``search_text`` from its facts, race-safely.
+    """Set one point's vector, ``search_text`` and fact points from its facts, race-safely.
 
     A concurrent writer (``memory_store``, extraction) may upsert the point
     between our read and our writes; ours would then pin a stale vector and
@@ -151,6 +150,7 @@ def _reindex_point(
             payload={"search_text": build_search_text(entity, now=now)},
             points=[point.id],
         )
+        sync_fact_points(client, entity, embedder, domain=domain, rebuild=True)
         fresh = client.retrieve(coll, ids=[point.id], with_payload=True)
         if not fresh or fresh[0].payload.get("facts") == point.payload.get("facts"):
             return

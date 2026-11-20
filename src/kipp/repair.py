@@ -20,9 +20,9 @@ from typing import Protocol
 
 from qdrant_client import QdrantClient
 
-from kipp.client import upsert_entity
+from kipp.facts import write_entity
 from kipp.extract import parse_lead_tag
-from kipp.merge import build_vector_text, drop_expired, find_duplicate, longer_lifetime
+from kipp.merge import drop_expired, find_duplicate, longer_lifetime
 from kipp.models import Entity, Fact
 
 EXTRACT_SOURCE = "extract"
@@ -107,10 +107,7 @@ def apply_repair(
 
     def write(entity: Entity) -> None:
         entity.last_updated = now.isoformat()
-        upsert_entity(
-            client, entity, embedder.embed(build_vector_text(entity, now=now)),
-            domain=domain,
-        )
+        write_entity(client, entity, embedder, domain=domain, now=now)
 
     for target in targets.values():
         write(replace(target, facts=target.facts + outgoing.get(target.id, [])))

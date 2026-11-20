@@ -16,7 +16,8 @@ from qdrant_client.models import (
     SearchParams,
 )
 
-from kipp.client import collection_name, point_to_entity
+from kipp.client import collection_name, entity_point_id, point_to_entity
+from kipp.facts import FACT_FETCH, search_facts
 from kipp.merge import fact_score
 from kipp.models import Entity
 
@@ -69,19 +70,25 @@ def _terms(text: str) -> set[str]:
     return {w for w in _WORD.findall(text) if len(w) >= 3 and w not in _STOPWORDS}
 
 
-def _rank_facts(entity: Entity, query: str, now: datetime) -> None:
+def _rank_facts(
+    entity: Entity, query: str, now: datetime, matched: dict[str, float] | None = None,
+) -> None:
     """Order ``entity.facts`` best-first for this query, in place.
 
     Facts are stored oldest-first, so callers that show the first fact (e.g.
     Endurance's per-turn injection) surfaced the entity's OLDEST fact rather
-    than the one the query hit. Rank by query-term overlap, then by
-    frequency × recency (``fact_score``). Lexical on purpose: embedding every
-    fact per query costs seconds on CPU. Per-fact vectors will replace this.
+    than the one the query hit. Facts the per-fact vector search matched
+    (``matched``: fact text -> score) come first, best score first. The rest
+    follow by query-term overlap, then frequency × recency (``fact_score``):
+    that lexical order is all an entity gets before its fact points exist.
     """
     q = _terms(query)
     entity.facts.sort(
         key=lambda f: (len(q & _terms(f.text)), fact_score(f, now)), reverse=True,
     )
+    if matched:
+        # Stable sort: unmatched facts keep the lexical order above.
+        entity.facts.sort(key=lambda f: -matched.get(f.text, float("-inf")))
 
 
 def search_entities(
@@ -99,6 +106,12 @@ def search_entities(
     Uses dense vector search as primary, with optional type filter.
     Deduplicates results across collections by entity_id, keeping the higher score.
 
+    Each fact also has its own point (``kipp.facts``). The nearest facts are
+    searched alongside the entity vectors and each entity scores the higher of
+    its entity hit and its best fact hit, so one fact buried among many still
+    surfaces its entity. Without a facts collection (installs not yet
+    reindexed) this is entity-vector search alone.
+
     Each result's facts are ordered best-first for the query (``_rank_facts``)
     and projected to a temporal view: superseded facts are
     hidden by default; pass ``as_of`` (ISO date) to see each entity as it was on
@@ -106,9 +119,10 @@ def search_entities(
     and the limit is applied AFTER projection so they don't squat the top slots.
     Use ``memory_get`` for the full, unfiltered record.
 
-    Retrieval ranks on the stored current-state vector (see ``_project_temporal``),
-    so ``as_of`` projects history onto entities current recall already surfaces;
-    it cannot find one whose only match is a superseded fact (issue #25).
+    Entity vectors are current-state only (see ``_project_temporal``). With
+    ``as_of`` set, the fact search includes superseded facts, so an entity can
+    be found by a fact that has since been replaced, but its ranking is still
+    not a full historical view (issue #25).
     """
     query_vector = embedder.embed(query)
 
@@ -124,7 +138,7 @@ def search_entities(
     # over-fetch more generously than the default "now" view. The fetch stays
     # bounded: an earlier unbounded "whole collection" fetch turned every as_of
     # search into an O(N) scan (Codex review of PR #23). as_of ranking is
-    # best-effort regardless (it ranks on the current-state vector — issue #25),
+    # best-effort regardless (entity vectors are current-state only — issue #25),
     # so a capped candidate window is the right tradeoff over scanning everything.
     fetch_limit = max(limit * (10 if as_of is not None else 2), limit)
 
@@ -149,11 +163,20 @@ def search_entities(
             if eid not in results_map or hit.score > results_map[eid].score:
                 results_map[eid] = SearchResult(entity=entity, score=hit.score)
 
+    fact_hits = search_facts(
+        client, query_vector, domain=domain, entity_type=entity_type,
+        current_only=as_of is None, limit=max(FACT_FETCH, fetch_limit),
+    )
+
     text_results = _text_search(client, query, search_filter, fetch_limit, domain=domain)
     for sr in text_results:
         eid = sr.entity.id
         if eid not in results_map:
             results_map[eid] = sr
+
+    # After the keyword fallback, so a keyword-only hit keeps its flat score
+    # when its best fact scores lower.
+    _merge_fact_hits(client, results_map, fact_hits, domain=domain)
 
     ranked = sorted(results_map.values(), key=lambda r: r.score, reverse=True)
 
@@ -162,11 +185,46 @@ def search_entities(
     for r in ranked:
         _project_temporal(r.entity, as_of)
         if r.entity.facts:
-            _rank_facts(r.entity, query, now)
+            matched: dict[str, float] = {}
+            for score, text in fact_hits.get(r.entity.id, []):
+                matched[text] = max(score, matched.get(text, float("-inf")))
+            _rank_facts(r.entity, query, now, matched)
             projected.append(r)
         if len(projected) >= limit:
             break
     return projected
+
+
+def _merge_fact_hits(
+    client: QdrantClient,
+    results_map: dict[str, SearchResult],
+    fact_hits: dict[str, list[tuple[float, str]]],
+    *,
+    domain: str,
+) -> None:
+    """Fold fact hits into ``results_map``: each entity keeps its best score.
+
+    Entities found only through a fact are fetched from their collection. A
+    fact point whose entity is gone (deleted mid-search) is skipped.
+    """
+    missing = {}
+    for eid, hits in fact_hits.items():
+        best = hits[0][0]
+        if eid in results_map:
+            results_map[eid].score = max(results_map[eid].score, best)
+        else:
+            missing[entity_point_id(eid)] = best
+    if not missing:
+        return
+    for kind in ("entities", "decisions"):
+        coll = collection_name(domain, kind)
+        if not client.collection_exists(coll):
+            continue
+        for p in client.retrieve(coll, ids=list(missing), with_payload=True):
+            entity = point_to_entity(p)
+            score = missing.get(str(p.id))
+            if score is not None and entity.id not in results_map:
+                results_map[entity.id] = SearchResult(entity=entity, score=score)
 
 
 def _text_search(
