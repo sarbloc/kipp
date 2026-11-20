@@ -167,3 +167,29 @@ def test_cli_reindex_all_domains(client, emb, monkeypatch):
     res = CliRunner().invoke(cli_mod.main, ["reindex", "--domain", "all"])
     assert res.exit_code == 0, res.output
     assert all(f"[{dom}] Re-embedded 1 entities." in res.output for dom in DOMAINS)
+
+
+def test_reindex_rebuilds_from_fresh_facts_when_a_store_lands_mid_pass(client, emb, monkeypatch):
+    old = Entity(id="person:a", type="person",
+                 facts=[Fact(text="lives in London", added="2026-11-01", source="t")])
+    new = Entity(id="person:a", type="person",
+                 facts=[Fact(text="lives in Berlin", added="2026-11-01", source="t")])
+    upsert_entity(client, old, emb.embed("stale"), domain="dev")
+
+    real_update = client.update_vectors
+    calls = []
+
+    def racing_update(*args, **kwargs):
+        calls.append(1)
+        real_update(*args, **kwargs)
+        if len(calls) == 1:  # a memory_store lands right after our first write
+            upsert_entity(client, new, emb.embed("writer"), domain="dev")
+
+    monkeypatch.setattr(client, "update_vectors", racing_update)
+    assert reindex_domain(client, emb, "dev", NOW) == 1
+
+    p = _point(client, collection_name("dev", "entities"), "person:a")
+    assert len(calls) == 2
+    assert p.vector == pytest.approx(emb.embed(build_vector_text(new, now=NOW)))
+    assert "Berlin" in p.payload["search_text"] and "London" not in p.payload["search_text"]
+    assert [f.text for f in get_entity(client, "person:a", domain="dev").facts] == ["lives in Berlin"]

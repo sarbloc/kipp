@@ -102,9 +102,8 @@ def reindex_domain(
     Vectors are only rebuilt when an entity is written, so a change to how they
     are built (``build_vector_text``, issue #49) reaches stored entities only
     through this pass. Facts are never rewritten: only the vector and the
-    ``search_text`` payload are set, so a store that lands mid-pass keeps its
-    facts. At worst that one entity keeps a vector built from its facts just
-    before the store, until its next write.
+    ``search_text`` payload are set. See ``_reindex_point`` for how a store
+    that lands mid-pass is handled.
 
     Returns the number of entities re-embedded.
     """
@@ -119,17 +118,44 @@ def reindex_domain(
                 collection_name=coll, limit=100, offset=offset, with_payload=True,
             )
             for p in points:
-                entity = point_to_entity(p)
-                client.update_vectors(
-                    collection_name=coll,
-                    points=[PointVectors(id=p.id, vector=embedder.embed(build_vector_text(entity, now=now)))],
-                )
-                client.set_payload(
-                    collection_name=coll,
-                    payload={"search_text": build_search_text(entity, now=now)},
-                    points=[p.id],
-                )
+                _reindex_point(client, embedder, coll, p, now)
                 count += 1
             if offset is None:
                 break
     return count
+
+
+REINDEX_ATTEMPTS = 5
+
+
+def _reindex_point(
+    client: QdrantClient, embedder: EmbedderLike, coll: str, point, now: datetime,
+) -> None:
+    """Set one point's vector and ``search_text`` from its facts, race-safely.
+
+    A concurrent writer (``memory_store``, extraction) may upsert the point
+    between our read and our writes; ours would then pin a stale vector and
+    keyword text onto its newer facts. So after writing, re-read the point
+    and, if its facts changed, rebuild from the fresh copy. A writer that
+    lands after our final re-read upserts its own consistent vector, so it
+    can't be left stale either.
+    """
+    for _ in range(REINDEX_ATTEMPTS):
+        entity = point_to_entity(point)
+        client.update_vectors(
+            collection_name=coll,
+            points=[PointVectors(id=point.id, vector=embedder.embed(build_vector_text(entity, now=now)))],
+        )
+        client.set_payload(
+            collection_name=coll,
+            payload={"search_text": build_search_text(entity, now=now)},
+            points=[point.id],
+        )
+        fresh = client.retrieve(coll, ids=[point.id], with_payload=True)
+        if not fresh or fresh[0].payload.get("facts") == point.payload.get("facts"):
+            return
+        point = fresh[0]
+    raise RuntimeError(
+        f"reindex: {coll}/{point.payload.get('entity_id')} kept changing during "
+        f"{REINDEX_ATTEMPTS} attempts; re-run kipp reindex"
+    )

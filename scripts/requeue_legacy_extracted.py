@@ -52,7 +52,7 @@ from kipp.client import (
 )
 from kipp.embedder import Embedder
 from kipp.extract import parse_lead_tag
-from kipp.merge import build_search_text
+from kipp.merge import build_vector_text
 from kipp.models import Entity, Fact
 from kipp.repair import apply_repair, plan_repair
 
@@ -198,7 +198,7 @@ def main() -> None:
             entity.facts = [f for f in entity.facts if id(f) not in leaving]
             entity.last_updated = now.isoformat()
             upsert_entity(
-                client, entity, embedder.embed(build_search_text(entity, now=now)),
+                client, entity, embedder.embed(build_vector_text(entity, now=now)),
                 domain=domain,
             )
         print(f"  applied: {total - bare} events written, {bare} bare tags dropped, "
