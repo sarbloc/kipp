@@ -21,6 +21,17 @@ class Embedder:
     def embed_batch(self, texts: list[str]) -> list[list[float]]:
         return self.model.encode(texts, normalize_embeddings=True).tolist()
 
+    @property
+    def window(self) -> int:
+        """Tokens of input text the model reads; the rest is truncated.
+
+        max_seq_length counts the [CLS] and [SEP] tokens the tokenizer adds.
+        """
+        return self.model.max_seq_length - 2
+
+    def count_tokens(self, text: str) -> int:
+        return len(self.model.tokenizer.tokenize(text))
+
 
 class MockEmbedder:
     """Deterministic hash-based embeddings for testing.
