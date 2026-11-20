@@ -243,7 +243,7 @@ def test_histories_ending_on_different_dates_stay_separate(client, emb):
     assert sorted(f.superseded_at or "" for f in target.facts) == ["", "2026-10-02", "2026-10-05"]
 
 
-def test_fact_superseded_mid_move_lands_superseded(client, emb, monkeypatch):
+def test_fact_superseded_mid_move_stays_with_its_replacement(client, emb, monkeypatch):
     _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
     real = split_mod.write_entity
     raced = []
@@ -261,9 +261,13 @@ def test_fact_superseded_mid_move_lands_superseded(client, emb, monkeypatch):
     move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
                domain="personal", now=NOW)
 
-    [moved] = get_entity(client, "person:alice-work", domain="personal").facts
-    assert (moved.text, moved.superseded_at) == ("Works at Initech.", "2026-11-20")
-    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Works at Acme."]
+    # No longer current, so no longer selected: the copy is taken back and
+    # the history stays with its replacement.
+    assert get_entity(client, "person:alice-work", domain="personal").facts == []
+    source = get_entity(client, "person:alice", domain="personal")
+    assert [(f.text, f.superseded_at) for f in source.facts] == [
+        ("Works at Initech.", "2026-11-20"), ("Works at Acme.", None),
+    ]
     points, _ = client.scroll(collection_name("personal", "facts"), limit=100, with_payload=True)
     current = {(p.payload["entity_id"], p.payload["text"]) for p in points if p.payload["current"]}
     assert current == {("person:alice", "Works at Acme.")}
@@ -693,9 +697,9 @@ def test_a_copy_changed_before_the_rerun_leaves_a_duplicate_not_a_loss(client, e
 
     target = get_entity(client, "person:alice-work", domain="personal")
     source = get_entity(client, "person:alice", domain="personal")
-    initech = sorted(f.is_current for f in target.facts if f.text == "Works at Initech.")
+    both = source.facts + target.facts
+    initech = sorted(f.is_current for f in both if f.text == "Works at Initech.")
     assert initech == [False, True]  # both versions kept; the operator resolves it
-    assert "Works at Initech." not in _texts(source)
     assert "Works at Acme." in _texts(source) + _texts(target)
 
 
@@ -706,9 +710,11 @@ def test_a_requested_text_takes_current_facts_not_old_history(client, emb):
     r = move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
     assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 2
     assert [f.is_current for f in get_entity(client, "person:alice", domain="personal").facts] == [False]
-    # With no current occurrence left, the text selects its history.
-    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
-    assert get_entity(client, "person:alice", domain="personal").facts == []
+    # Repeating the move takes nothing new: history is never selected directly.
+    again = move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."],
+                       domain="personal", now=NOW)
+    assert again.already == ["Said hello."]
+    assert [f.is_current for f in get_entity(client, "person:alice", domain="personal").facts] == [False]
     assert r.moved == ["Said hello."]
 
 
@@ -863,3 +869,47 @@ def test_facts_knocked_off_the_target_stay_on_the_source(client, emb, monkeypatc
 
     assert "no longer on the target" in caplog.text
     assert "Allergic to penicillin." in _texts(get_entity(client, "person:alice", domain="personal"))
+
+
+def test_backdated_replacement_carries_its_history(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Lived in York.", added="2020-01-01", superseded_at="2026-11-01", superseded_by="Lives in Leeds."),
+        _fact("Lives in Leeds.", added="2026-11-20", valid_from="2026-11-01"),
+    ]))
+    move_facts(client, emb, "person:alice", "person:alice-home", ["Lives in Leeds."], domain="personal", now=NOW)
+    assert len(get_entity(client, "person:alice-home", domain="personal").facts) == 2
+
+
+def test_history_with_two_candidate_replacements_on_one_day_stays_put(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Uses Windows.", added="2026-11-20", superseded_at="2026-11-20", superseded_by="Uses Linux."),
+        _fact("Uses Linux.", added="2026-11-20", superseded_at="2026-11-20", superseded_by="Uses macOS."),
+        _fact("Uses macOS.", added="2026-11-20"),
+        _fact("Uses Linux.", added="2026-11-20"),
+    ]))
+    move_facts(client, emb, "person:alice", "person:alice-linux", ["Uses Linux."], domain="personal", now=NOW)
+    assert _texts(get_entity(client, "person:alice-linux", domain="personal")) == ["Uses Linux."]
+    assert "Uses Windows." in _texts(get_entity(client, "person:alice", domain="personal"))
+
+
+def test_a_stale_target_write_that_drops_metadata_keeps_the_source_copy(client, emb, monkeypatch, caplog):
+    _seed(client, emb, Entity(id="person:alice", type="person",
+                              facts=[_fact("Allergic to penicillin.", hit_count=9)]))
+    _seed(client, emb, Entity(id="person:alice-health", type="person",
+                              facts=[_fact("Allergic to penicillin.", hit_count=1)]))  # interrupted copy
+    stale = get_entity(client, "person:alice-health", domain="personal")
+    real = split_mod.write_entity
+
+    def racing_store(client_, entity, *a, **kw):
+        real(client_, entity, *a, **kw)
+        if entity.id == "person:alice-health":
+            real(client_, stale, emb, domain="personal", now=NOW)
+
+    monkeypatch.setattr(split_mod, "write_entity", racing_store)
+    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+               domain="personal", now=NOW)
+
+    assert "no longer on the target" in caplog.text
+    [kept] = get_entity(client, "person:alice", domain="personal").facts
+    assert kept.hit_count == 9
+

@@ -128,11 +128,12 @@ may appear only once.
 tool:
 
 - Facts match by exact text and move unchanged: dates, source and hit count.
-  A plan text takes only current facts; a text with none left moves nothing.
-  (`memory_move` on its own falls back to the text's history.)
+  A text takes only its current facts, so repeating a move takes nothing
+  new; history moves only with its replacement.
 - Superseded facts follow the fact that replaced them, whichever group moves
   first. If the replacing text occurs more than once, the link goes to the
-  latest occurrence recorded by the supersession date. Unlinked history stays
+  latest occurrence in effect by the supersession date; a tie leaves the
+  history where it is. Unlinked history stays
   on the source, and so does history whose replacement was later reworded by
   a merge (#26).
 - A plan that lists a history-only text in `keep` or another group, while
