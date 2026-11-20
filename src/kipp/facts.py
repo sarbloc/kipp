@@ -36,7 +36,8 @@ from kipp.client import (
 from kipp.merge import build_vector_text
 from kipp.models import Entity, Fact
 
-FACT_FETCH = 50      # fact hits fetched per search, before grouping by entity
+FACT_FETCH = 50      # entities fetched per fact search (grouped, so many-fact entities can't crowd others out)
+FACTS_PER_ENTITY = 10  # matched facts kept per entity, for ordering its facts
 SYNC_ATTEMPTS = 5
 _UPSERT_CHUNK = 100
 
@@ -145,6 +146,14 @@ def write_entity(
     the entity itself is stored, and ``kipp reindex`` repairs the index.
     """
     upsert_entity(client, entity, embedder.embed(build_vector_text(entity, now=now)), domain=domain)
+    _sync_until_stable(client, entity, embedder, domain=domain)
+
+
+def _sync_until_stable(
+    client: QdrantClient, entity: Entity, embedder: EmbedderLike, *, domain: str,
+) -> None:
+    """Sync ``entity``'s fact points, then re-read and re-sync until the stored
+    entity matches what was synced. Never writes the entity itself."""
     for _ in range(SYNC_ATTEMPTS):
         sync_fact_points(client, entity, embedder, domain=domain)
         stored = get_entity(client, entity.id, domain=domain)
@@ -152,7 +161,7 @@ def write_entity(
             return
         entity = stored
     log.warning(
-        "write_entity: %s/%s changed on each of %d fact syncs; its fact points may be "
+        "fact sync: %s/%s changed on each of %d attempts; its fact points may be "
         "stale until its next write or kipp reindex --domain %s",
         domain, entity.id, SYNC_ATTEMPTS, domain,
     )
@@ -192,7 +201,7 @@ def prune_orphan_fact_points(
         pruned += 1
         revived = get_entity(client, eid, domain=domain)
         if revived is not None:
-            sync_fact_points(client, revived, embedder, domain=domain)
+            _sync_until_stable(client, revived, embedder, domain=domain)
     return pruned
 
 
@@ -216,9 +225,12 @@ def search_facts(
 ) -> dict[str, list[tuple[float, str]]]:
     """Nearest facts to ``query_vector``, grouped by entity id.
 
-    Returns ``{entity_id: [(score, fact_text), ...]}``, entities in order of
-    their best fact, each list best first. Empty if the domain has no facts
-    collection yet (pre-reindex installs fall back to entity vectors alone).
+    Returns up to ``limit`` entities as ``{entity_id: [(score, fact_text), ...]}``,
+    in order of their best fact, each list best first (at most
+    ``FACTS_PER_ENTITY``). Grouping happens in Qdrant, so a few entities with
+    many matching facts can't use up the candidate window. Empty if the domain
+    has no facts collection yet (pre-reindex installs fall back to entity
+    vectors alone).
     """
     coll = collection_name(domain, "facts")
     if not client.collection_exists(coll):
@@ -228,14 +240,16 @@ def search_facts(
         must.append(FieldCondition(key="current", match=MatchValue(value=True)))
     if entity_type:
         must.append(FieldCondition(key="type", match=MatchValue(value=entity_type)))
-    hits = client.query_points(
+    result = client.query_points_groups(
         collection_name=coll,
+        group_by="entity_id",
         query=query_vector,
         query_filter=Filter(must=must) if must else None,
         limit=limit,
-        with_payload=True,
+        group_size=FACTS_PER_ENTITY,
+        with_payload=["text"],
     )
-    out: dict[str, list[tuple[float, str]]] = {}
-    for h in hits.points:
-        out.setdefault(h.payload["entity_id"], []).append((h.score, h.payload["text"]))
-    return out
+    return {
+        str(g.id): [(h.score, h.payload["text"]) for h in g.hits]
+        for g in result.groups
+    }

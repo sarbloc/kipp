@@ -1,5 +1,6 @@
 """Per-fact search points (Phase 2), against Qdrant's in-process local mode."""
 
+import math
 import warnings
 from datetime import datetime
 
@@ -354,6 +355,35 @@ def test_reindex_backfills_fact_points_and_prunes_orphans(client):
 
 
 
+def test_prune_revive_rereads_until_stable(client, monkeypatch):
+    """A store landing between the revive's read and its sync must win."""
+    emb = _Embedder()
+    ghost = _entity("person:ghost", ("Old.",))
+    newer = _entity("person:ghost", ("Old.", "Newer."))
+    sync_fact_points(client, ghost, emb, domain="shared")
+    real_delete, real_sync = client.delete, facts_mod.sync_fact_points
+    state = {"recreated": False, "raced": False}
+
+    def delete_then_recreate(*args, **kwargs):
+        real_delete(*args, **kwargs)
+        if not state["recreated"]:
+            state["recreated"] = True
+            upsert_entity(client, ghost, emb.embed("x"))
+
+    def sync_racing(client_, entity, embedder, *, domain, rebuild=False):
+        if not state["raced"]:  # the newer store lands and finishes first
+            state["raced"] = True
+            upsert_entity(client, newer, emb.embed("x"))
+            real_sync(client_, newer, embedder, domain=domain)
+        real_sync(client_, entity, embedder, domain=domain, rebuild=rebuild)
+
+    monkeypatch.setattr(client, "delete", delete_then_recreate)
+    monkeypatch.setattr(facts_mod, "sync_fact_points", sync_racing)
+    prune_orphan_fact_points(client, "shared", emb)
+
+    assert {p["text"] for p in _points(client).values()} == {"Old.", "Newer."}
+
+
 def test_prune_resyncs_an_entity_recreated_mid_prune(client, monkeypatch):
     emb = _Embedder()
     ghost = _entity("person:ghost", ("Back again.",))
@@ -421,3 +451,25 @@ def test_ensure_fact_collection_tolerates_a_racing_creator(monkeypatch):
         warnings.simplefilter("ignore")
         assert ensure_fact_collection(c, "dev") == "dev_facts"
     assert real_exists("dev_facts")
+
+
+def test_search_facts_is_not_crowded_out_by_many_fact_entities(client):
+    """Three entities with 20 perfect fact matches each must not use up the
+    window: a fourth entity's single good fact still comes back."""
+    q = _unit(0)
+    table = {}
+    for i in range(3):
+        e = _entity(f"person:noisy{i}", tuple(f"Noisy {i} fact {j}." for j in range(20)))
+        for f in e.facts:
+            table[fact_vector_text(e, f)] = q
+        write_entity(client, e, _Embedder(table))
+    quiet = _entity("person:quiet", ("The one relevant fact.",))
+    near = [0.0] * DIMS
+    near[0], near[1] = 0.9, math.sqrt(1 - 0.81)
+    table[fact_vector_text(quiet, quiet.facts[0])] = near
+    write_entity(client, quiet, _Embedder(table))
+
+    hits = search_facts(client, q, domain="shared", limit=4)
+
+    assert list(hits)[-1] == "person:quiet"
+    assert all(len(v) <= 10 for v in hits.values())

@@ -165,7 +165,7 @@ def search_entities(
 
     fact_hits = search_facts(
         client, query_vector, domain=domain, entity_type=entity_type,
-        current_only=as_of is None, limit=max(FACT_FETCH, fetch_limit * 5),
+        current_only=as_of is None, limit=max(FACT_FETCH, fetch_limit),
     )
     _merge_fact_hits(client, results_map, fact_hits, domain=domain)
 
