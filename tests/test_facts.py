@@ -211,7 +211,7 @@ def test_prune_removes_only_orphaned_fact_points(client):
     write_entity(client, _entity("decision:use-qdrant", ("Qdrant over pgvector.",)), emb)
     sync_fact_points(client, _entity("person:ghost", ("Gone.",)), emb, domain="shared")
 
-    assert prune_orphan_fact_points(client, "shared") == 1
+    assert prune_orphan_fact_points(client, "shared", emb) == 1
 
     assert {p["entity_id"] for p in _points(client).values()} == {"person:alice", "decision:use-qdrant"}
 
@@ -352,3 +352,72 @@ def test_reindex_backfills_fact_points_and_prunes_orphans(client):
     pts = _points(client, "dev")
     assert set(pts) == {fact_point_id(legacy.id, f) for f in legacy.facts}
 
+
+
+def test_prune_resyncs_an_entity_recreated_mid_prune(client, monkeypatch):
+    emb = _Embedder()
+    ghost = _entity("person:ghost", ("Back again.",))
+    sync_fact_points(client, ghost, emb, domain="shared")
+    real_delete = client.delete
+
+    def delete_then_recreate(*args, **kwargs):
+        real_delete(*args, **kwargs)
+        upsert_entity(client, ghost, emb.embed("x"))  # a store lands right after
+
+    monkeypatch.setattr(client, "delete", delete_then_recreate)
+    prune_orphan_fact_points(client, "shared", emb)
+
+    assert {p["text"] for p in _points(client).values()} == {"Back again."}
+
+
+def test_write_entity_logs_when_sync_never_settles(client, monkeypatch, caplog):
+    emb = _Embedder()
+    n = {"i": 0}
+
+    def ever_changing(client, entity_id, *, domain):
+        n["i"] += 1
+        return _entity(facts=(f"Version {n['i']}.",))
+
+    monkeypatch.setattr(facts_mod, "get_entity", ever_changing)
+    with caplog.at_level("WARNING", logger="kipp.facts"):
+        write_entity(client, _entity(), emb)
+
+    assert "may be stale" in caplog.text
+
+
+def test_reindex_reembeds_existing_fact_points(client):
+    e = _entity(facts=("Owns a cat.",))
+    write_entity(client, e, _Embedder(), domain="dev")
+    pid = fact_point_id(e.id, e.facts[0])
+    new_vec = _unit(7)
+    target = fact_vector_text(e, e.facts[0])
+
+    reindex_domain(client, _Embedder({target: new_vec}), "dev", NOW)
+
+    (p,) = client.retrieve(collection_name("dev", "facts"), ids=[pid], with_vectors=True)
+    assert p.vector == pytest.approx(new_vec)
+
+
+def test_ensure_fact_collection_tolerates_a_racing_creator(monkeypatch):
+    from kipp.client import ensure_fact_collection
+
+    c = QdrantClient(":memory:")
+    real_exists = c.collection_exists
+    seen = {"n": 0}
+
+    def stale_exists(name):  # first check misses a collection another process just made
+        seen["n"] += 1
+        if seen["n"] == 1:
+            ensure_fact_collection_real(name)
+            return False
+        return real_exists(name)
+
+    def ensure_fact_collection_real(name):
+        from qdrant_client.models import Distance, VectorParams
+        c.create_collection(name, vectors_config=VectorParams(size=DIMS, distance=Distance.COSINE))
+
+    monkeypatch.setattr(c, "collection_exists", stale_exists)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        assert ensure_fact_collection(c, "dev") == "dev_facts"
+    assert real_exists("dev_facts")

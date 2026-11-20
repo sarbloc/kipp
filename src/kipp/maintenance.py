@@ -119,7 +119,7 @@ def reindex_domain(
                 count += 1
             if offset is None:
                 break
-    prune_orphan_fact_points(client, domain)
+    prune_orphan_fact_points(client, domain, embedder)
     return count
 
 
@@ -150,7 +150,7 @@ def _reindex_point(
             payload={"search_text": build_search_text(entity, now=now)},
             points=[point.id],
         )
-        sync_fact_points(client, entity, embedder, domain=domain)
+        sync_fact_points(client, entity, embedder, domain=domain, rebuild=True)
         fresh = client.retrieve(coll, ids=[point.id], with_payload=True)
         if not fresh or fresh[0].payload.get("facts") == point.payload.get("facts"):
             return

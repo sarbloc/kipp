@@ -205,10 +205,16 @@ def ensure_fact_collection(client: QdrantClient, domain: str, size: int = VECTOR
     """Create the domain's per-fact search collection and its indexes if missing."""
     coll = collection_name(domain, "facts")
     if not client.collection_exists(coll):
-        client.create_collection(
-            collection_name=coll,
-            vectors_config=VectorParams(size=size, distance=Distance.COSINE),
-        )
+        try:
+            client.create_collection(
+                collection_name=coll,
+                vectors_config=VectorParams(size=size, distance=Distance.COSINE),
+            )
+        except Exception:
+            # Another process created it first (both saw it missing): fine.
+            if not client.collection_exists(coll):
+                raise
+        # Index creation is idempotent, so a racing creator repeating it is harmless.
         client.create_payload_index(coll, "entity_id", field_schema=PayloadSchemaType.KEYWORD)
         client.create_payload_index(coll, "type", field_schema=PayloadSchemaType.KEYWORD)
         client.create_payload_index(coll, "current", field_schema=PayloadSchemaType.BOOL)
@@ -329,8 +335,11 @@ def delete_entity(
             continue
         points = client.retrieve(collection_name=coll, ids=[point_id], with_payload=False)
         if points:
-            client.delete(collection_name=coll, points_selector=[point_id])
+            # Fact points go first. If a store re-creates the entity mid-delete,
+            # the worst case is orphaned fact points (skipped by search, pruned
+            # by reindex), never a live entity stripped of its index.
             _delete_fact_points(client, entity_id, domain)
+            client.delete(collection_name=coll, points_selector=[point_id])
             return True
     return False
 

@@ -12,6 +12,7 @@ the index hasn't seen and deletes points for facts the entity no longer holds.
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime
 from typing import Protocol
 
@@ -36,8 +37,10 @@ from kipp.merge import build_vector_text
 from kipp.models import Entity, Fact
 
 FACT_FETCH = 50      # fact hits fetched per search, before grouping by entity
-SYNC_ATTEMPTS = 3
+SYNC_ATTEMPTS = 5
 _UPSERT_CHUNK = 100
+
+log = logging.getLogger(__name__)
 
 
 class EmbedderLike(Protocol):
@@ -91,11 +94,14 @@ def _indexed_ids(client: QdrantClient, coll: str, entity_id: str) -> set[str]:
 
 def sync_fact_points(
     client: QdrantClient, entity: Entity, embedder: EmbedderLike, *, domain: str,
+    rebuild: bool = False,
 ) -> None:
     """Make the domain's fact points for ``entity`` match its facts exactly.
 
-    New points are written before stale ones are deleted, so a concurrent
-    search never sees the entity with no fact points mid-sync.
+    Only facts without a point are embedded, unless ``rebuild`` re-embeds them
+    all (reindex: the embedder or vector text may have changed). New points
+    are written before stale ones are deleted, so a concurrent search never
+    sees the entity with no fact points mid-sync.
     """
     coll = collection_name(domain, "facts")
     exists = client.collection_exists(coll)
@@ -105,7 +111,7 @@ def sync_fact_points(
     points = [
         PointStruct(id=pid, vector=embedder.embed(fact_vector_text(entity, f)), payload=_payload(entity, f))
         for pid, f in wanted.items()
-        if pid not in indexed
+        if rebuild or pid not in indexed
     ]
     if points and not exists:
         # Created on first write, sized to the embedder actually in use.
@@ -131,10 +137,12 @@ def write_entity(
     Every write path goes through here so the fact index can't drift from the
     entity. ``upsert_entity`` is the low-level primitive underneath.
 
-    The entity point is written first, so fact points never exist for an
-    entity that doesn't. Two writers racing on one entity could otherwise
-    leave the index following the loser's facts, so after syncing, the stored
-    entity is re-read and the index re-synced to it if it moved on.
+    The entity point is written before its fact points. Two writers racing on
+    one entity could leave the index following the loser's facts, so after
+    syncing, the stored entity is re-read and the index re-synced to it until
+    they agree. A writer that lands after our last re-read syncs after it, so
+    the index converges unless this loop runs out first, which is logged:
+    the entity itself is stored, and ``kipp reindex`` repairs the index.
     """
     upsert_entity(client, entity, embedder.embed(build_vector_text(entity, now=now)), domain=domain)
     for _ in range(SYNC_ATTEMPTS):
@@ -143,21 +151,26 @@ def write_entity(
         if stored is None or _fact_ids(stored) == _fact_ids(entity):
             return
         entity = stored
-    # A writer landed on every attempt; its own write_entity syncs after it,
-    # so the index still converges. Nothing to raise.
+    log.warning(
+        "write_entity: %s/%s changed on each of %d fact syncs; its fact points may be "
+        "stale until its next write or kipp reindex --domain %s",
+        domain, entity.id, SYNC_ATTEMPTS, domain,
+    )
 
 
 def _fact_ids(entity: Entity) -> set[str]:
     return {fact_point_id(entity.id, f) for f in entity.facts}
 
 
-def prune_orphan_fact_points(client: QdrantClient, domain: str) -> int:
+def prune_orphan_fact_points(
+    client: QdrantClient, domain: str, embedder: EmbedderLike,
+) -> int:
     """Delete fact points whose entity no longer exists. Returns entities pruned.
 
     Covers deletes that bypassed ``delete_entity`` (raw Qdrant edits, restores
-    of an older entities snapshot). Each candidate is re-checked just before
-    its delete; writers create the entity point before its fact points, so a
-    freshly written entity is never pruned.
+    of an older entities snapshot) and delete races. An entity re-created
+    between the existence check and the delete would lose its points, so it
+    is checked again afterwards and, if present, re-synced.
     """
     coll = collection_name(domain, "facts")
     if not client.collection_exists(coll):
@@ -177,6 +190,9 @@ def prune_orphan_fact_points(client: QdrantClient, domain: str) -> int:
             continue
         client.delete(collection_name=coll, points_selector=FilterSelector(filter=_entity_filter(eid)))
         pruned += 1
+        revived = get_entity(client, eid, domain=domain)
+        if revived is not None:
+            sync_fact_points(client, revived, embedder, domain=domain)
     return pruned
 
 
