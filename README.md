@@ -57,6 +57,7 @@ cd kipp
 docker compose up -d --wait
 
 # 2. Install the CLI and MCP server
+#    (if `kipp` is then "command not found", run `pipx ensurepath` and open a new shell)
 pipx install .
 
 # 3. Create the collections
@@ -67,7 +68,9 @@ kipp store --type person --id alice --content "Leads the billing team"
 kipp search "who runs billing"
 ```
 
-`kipp search` should print `person:alice` as the top hit.
+`kipp search` should print `person:alice` as the top hit. A warning about
+unauthenticated requests to the HF Hub is harmless: the model is public, and
+once it's cached nothing is downloaded again.
 
 Then:
 

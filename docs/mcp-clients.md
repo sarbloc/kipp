@@ -37,9 +37,17 @@ claude mcp list          # kipp should show as connected
 ```
 
 `--scope user` makes it available in every project. Use `--scope project` to
-write a `.mcp.json` you can commit for a team instead. Pass environment with
-`-e`, for example
-`claude mcp add --scope user -e QDRANT_URL=http://qdrant.lan:6333 kipp -- kipp mcp`.
+write a `.mcp.json` you can commit for a team instead. Each person then
+approves the server the first time they run `claude` in that project; until
+then `claude mcp list` shows it as pending approval.
+
+Pass environment with `-e`, **after** the server name. `-e` takes several
+values, so a name placed after it is read as another variable and the command
+fails:
+
+```bash
+claude mcp add --scope user kipp -e QDRANT_URL=http://qdrant.lan:6333 -- kipp mcp
+```
 
 Claude Code asks before each tool call until you allow the tools. To allow
 them all, add `"mcp__kipp"` to `permissions.allow` in
