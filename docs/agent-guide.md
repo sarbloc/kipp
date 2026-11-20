@@ -92,8 +92,12 @@ is filed onto that entity automatically by `memory_extract`:
   `memory_store` returns a `warning` for any fact over 40 words.
 - **Narrow entities.** Past 30 current facts, `memory_store` returns an
   `oversized` note. File new facts on a topic entity named `<id>-<topic>`
-  instead (`person:alice-health`, `person:alice-career`). Keep using the same
-  topic ids once they exist.
+  instead (`person:alice-health`, `person:alice-career`), passing
+  `parent: "person:alice"` when you create it. Keep using the same topic ids
+  once they exist: `memory_get` on the parent lists them as `children`.
+- **Moving facts.** `memory_move` moves facts, by exact text, to another
+  entity in the same domain, creating it as a child if it doesn't exist. Use
+  it to split an entity or to fix a fact filed in the wrong place.
 - **Self-contained.** Write "Alice leads the billing team", not "She leads
   it".
 - **Stable ids.** `project:billing-api` every time. A second id for the same
@@ -183,9 +187,10 @@ the backlog with `kipp stats`; `events` is the shared domain's inbox.
 | Tool | Use |
 |------|-----|
 | `memory_search` | Semantic search over entities in a domain. `as_of` shows the state on a past date. |
-| `memory_get` | One entity, every fact, including superseded history. |
+| `memory_get` | One entity, every fact, including superseded history, plus its `parent` and `children`. |
 | `memory_list` | All entity ids in a domain, optionally filtered by type. |
-| `memory_store` | Add a fact to an entity, creating it if needed. Dedups automatically. |
+| `memory_store` | Add a fact to an entity, creating it if needed. Dedups automatically. `parent` links a topic entity. |
+| `memory_move` | Move facts to another entity in the same domain. Superseded history follows. |
 | `memory_event` | Log a raw observation to the domain's 30-day inbox. |
 | `memory_extract` | File tagged events onto existing entities. |
 | `memory_events_unextracted` | Events still waiting to be filed. |

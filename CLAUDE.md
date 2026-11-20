@@ -63,6 +63,7 @@ The four kinds:
 | `maintenance.py` | expire, compact, `reindex` (vectors, `search_text`, fact points) |
 | `export.py` | Export/import (JSON and markdown formats) |
 | `evaluate.py` | `kipp eval`: recall scoring against a JSONL known-answer case file |
+| `split.py` | Split oversized entities: `plan_split` (Ward clustering), `move_facts` (target first, never loses a fact), `apply_plan` |
 | `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |
 
 ### MCP entrypoint
@@ -77,6 +78,7 @@ The four kinds:
 | `memory_search` | `memory search` |
 | `memory_event` | `memory event` (also accepts `run_id`/`session_id`/`profile`/`trigger_source` for provenance) |
 | `memory_extract` | `memory extract` |
+| `memory_move` | `split.move_facts` (what `kipp split-apply` runs per group) |
 | `memory_embed` | direct embedder access (lets MCP clients reuse the same MiniLM model) |
 | `memory_stats` | `memory stats` |
 
@@ -85,7 +87,7 @@ The CLI surface is unchanged: existing commands default to `domain="shared"` via
 ### Core algorithms (all deterministic, no LLM)
 
 - **Merge:** New facts compared by cosine similarity. >= 0.9 = duplicate (increment hit_count, keep longer text). < 0.9 = new fact appended.
-- **Size:** No cap (#52). Past `SPLIT_THRESHOLD` (30) current facts, `memory_store` returns an `oversized` note (separate from `warning`) suggesting topic entities named `<id>-<topic>`; `kipp oversized` lists them. `kipp compact` (keep top `MAX_FACTS` by `frequency × recency × permanence`) is manual and lossy; nothing schedules it.
+- **Size:** No cap (#52). Past `SPLIT_THRESHOLD` (30) current facts, `memory_store` returns an `oversized` note (separate from `warning`) suggesting topic entities named `<id>-<topic>`; `kipp oversized` lists them; `kipp split-plan`/`split-apply` split one, and topic entities carry `parent` (`memory_get` lists `children`). `kipp compact` (keep top `MAX_FACTS` by `frequency × recency × permanence`) is manual and lossy; nothing schedules it.
 - **Extraction:** An event opening with a `[type:id]` tag routes all its sentences to that entity if it exists; otherwise it stays unextracted for the LLM agent to create. Untagged events are cosine-matched (per fact, 0.32) only with `match_untagged` / `--match-untagged` — off by default because it misattributed most facts (#33). Nothing is auto-created as an entity.
 
 ### Constants

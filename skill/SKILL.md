@@ -54,10 +54,12 @@ kipp search "<query>"
 | `kipp store --type T --id K --content "..."` | Upsert entity with fact |
 | `kipp search "<query>" [--type T] [--limit N]` | Semantic search |
 | `kipp extract [--since 55m \| --all]` | Process events into entities |
-| `kipp get <entity_id>` | Show entity detail |
+| `kipp get <entity_id> [--domain D]` | Show entity detail, parent and children |
 | `kipp list [--type T]` | List all entities |
 | `kipp delete <entity_id>` | Delete entity |
 | `kipp oversized [--domain D] [--threshold N]` | List entities due a split into topic entities |
+| `kipp split-plan <entity_id> [--domain D] [-o plan.json]` | Group an entity's facts by topic into an editable plan |
+| `kipp split-apply plan.json [--apply]` | Move facts into topic entities (dry run by default) |
 | `kipp compact [--max-facts N]` | Delete all but each entity's top facts (lossy, manual) |
 | `kipp expire` | GC expired events and facts |
 | `kipp export [--format json\|md]` | Backup entities |

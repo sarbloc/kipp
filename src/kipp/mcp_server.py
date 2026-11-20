@@ -24,6 +24,7 @@ from kipp.client import (
     get_client,
     get_entity,
     get_unextracted_events,
+    list_children,
     mark_event_extracted,
     scroll_entities,
     store_event,
@@ -41,6 +42,7 @@ from kipp.merge import (
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 from kipp.search import format_results, search_entities
+from kipp.split import check_parent, move_facts
 
 EVENT_TTL_DAYS = 30
 SEARCH_FACTS_PER_HIT = 10
@@ -65,6 +67,7 @@ def _entity_to_dict(entity: Entity) -> dict[str, Any]:
         "id": entity.id,
         "type": entity.type,
         "last_updated": entity.last_updated,
+        "parent": entity.parent,
         "facts": [
             {
                 "text": f.text,
@@ -95,6 +98,7 @@ def memory_store(
     domain: str = "shared",
     supersedes: str | None = None,
     valid_from: str | None = None,
+    parent: str | None = None,
 ) -> dict[str, Any]:
     """Upsert an entity with a fact in the given domain.
 
@@ -112,6 +116,9 @@ def memory_store(
             "lives in London") rather than just adding a new independent fact.
         valid_from: ISO date the new fact became true in the world, if it
             differs from today (when it was recorded). Optional.
+        parent: full id of the existing entity this one is a topic of, e.g.
+            'person:alice' for 'person:alice-health'. Set it when creating a
+            topic entity; ``memory_get`` on the parent then lists it.
 
     The superseded fact records ``superseded_by=content`` — the replacement text
     as the caller asserted it. That's a descriptive audit trail of intent, not a
@@ -146,9 +153,14 @@ def memory_store(
             f"{today}); future-effective dating is tracked in issue #24"
         )
 
+    if parent is not None:
+        check_parent(client, full_id, parent, domain=domain)
+
     existing = get_entity(client, full_id, domain=domain)
     if existing is None:
         existing = Entity(id=full_id, type=entity_type)
+    if parent is not None:
+        existing.parent = parent
 
     superseded = None
     if supersedes:
@@ -183,11 +195,17 @@ def memory_store(
 
 @mcp.tool()
 def memory_get(entity_id: str, domain: str = "shared") -> dict[str, Any] | None:
-    """Retrieve a single entity by id from a domain. Returns None if missing."""
+    """Retrieve a single entity by id from a domain. Returns None if missing.
+
+    ``parent`` names the entity this one is a topic of; ``children`` lists
+    its own topic entities. Facts about a topic may live on a child.
+    """
     _validate_domain(domain)
     client = get_client()
     entity = get_entity(client, entity_id, domain=domain)
-    return _entity_to_dict(entity) if entity else None
+    if entity is None:
+        return None
+    return {**_entity_to_dict(entity), "children": list_children(client, entity.id, domain=domain)}
 
 
 @mcp.tool()
@@ -200,7 +218,10 @@ def memory_list(
     client = get_client()
     entities = scroll_entities(client, entity_type=entity_type, domain=domain)
     return [
-        {"id": e.id, "type": e.type, "facts": len(e.facts), "last_updated": e.last_updated}
+        {
+            "id": e.id, "type": e.type, "facts": len(e.facts),
+            "last_updated": e.last_updated, "parent": e.parent,
+        }
         for e in entities
     ]
 
@@ -253,6 +274,55 @@ def _search_hit(score: float, entity: Entity) -> dict[str, Any]:
         hit["facts"] = hit["facts"][:SEARCH_FACTS_PER_HIT]
         hit["facts_omitted"] = omitted
     return hit
+
+
+@mcp.tool()
+def memory_move(
+    source_id: str,
+    target_id: str,
+    facts: list[str],
+    domain: str = "shared",
+) -> dict[str, Any]:
+    """Move facts from one entity to another in the same domain.
+
+    Use it to split an oversized entity into topic entities, or to fix a fact
+    filed on the wrong entity.
+
+    Args:
+        source_id: full id of the entity holding the facts, e.g. 'person:alice'.
+        target_id: full id to move them to, e.g. 'person:alice-health'. Created
+            if missing, with the type from its prefix and ``parent=source_id``.
+        facts: exact texts of the facts to move, as ``memory_get`` returns them.
+            Superseded facts follow the fact that replaced them.
+        domain: shared | dev | personal (default shared)
+
+    Facts move unchanged (dates, source, hit count). The target is written
+    first, so a failure part-way can leave a fact on both entities but never
+    on neither; calling again with the same arguments finishes the move.
+
+    Returns ``moved`` (texts moved now), ``already`` (texts only on the target
+    already), ``unmatched`` (texts on neither entity), ``carried`` (superseded
+    facts moved with them), ``created`` and each side's current fact count.
+    """
+    _validate_domain(domain)
+    client = get_client()
+    ensure_collections(client)
+    result = move_facts(
+        client, _embedder_instance(), source_id, target_id, facts,
+        domain=domain, now=datetime.utcnow(),
+    )
+    return {
+        "source": result.source,
+        "target": result.target,
+        "domain": domain,
+        "moved": result.moved,
+        "already": result.already,
+        "unmatched": result.unmatched,
+        "carried": result.carried,
+        "created": result.created,
+        "source_facts": result.source_facts,
+        "target_facts": result.target_facts,
+    }
 
 
 @mcp.tool()

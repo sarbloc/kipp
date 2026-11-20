@@ -16,6 +16,7 @@ def export_json(entities: list[Entity], out: TextIO) -> None:
             "id": e.id,
             "type": e.type,
             "last_updated": e.last_updated,
+            "parent": e.parent,
             "facts": [
                 {
                     "text": f.text,
@@ -100,5 +101,6 @@ def import_json(data: list[dict]) -> list[Entity]:
             type=item["type"],
             facts=facts,
             last_updated=item.get("last_updated", ""),
+            parent=item.get("parent"),
         ))
     return entities

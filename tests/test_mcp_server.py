@@ -245,6 +245,41 @@ def test_memory_store_indexes_facts_in_its_domain(mcp_env):
     assert mcp_env.scroll("facts", limit=10)[0] == []
 
 
+# ── topic entities: parent, children, memory_move (#52) ──
+
+def test_memory_store_parent_links_child(mcp_env):
+    mcp_server.memory_store("person", "al", "lives in Leeds", domain="dev")
+    with pytest.raises(ValueError, match="not found"):
+        mcp_server.memory_store("person", "al-health", "knee", domain="dev", parent="person:ghost")
+    with pytest.raises(ValueError, match="own parent"):
+        mcp_server.memory_store("person", "al", "x", domain="dev", parent="person:al")
+
+    mcp_server.memory_store("person", "al-health", "bad knee", domain="dev", parent="person:al")
+    # A later store without parent keeps it.
+    mcp_server.memory_store("person", "al-health", "sees a physio", domain="dev")
+
+    child = mcp_server.memory_get("person:al-health", domain="dev")
+    assert (child["parent"], child["children"]) == ("person:al", [])
+    assert mcp_server.memory_get("person:al", domain="dev")["children"] == ["person:al-health"]
+    listed = {e["id"]: e["parent"] for e in mcp_server.memory_list(domain="dev")}
+    assert listed == {"person:al": None, "person:al-health": "person:al"}
+
+
+def test_memory_move_tool(mcp_env):
+    mcp_server.memory_store("person", "al", "lives in Leeds", domain="dev")
+    mcp_server.memory_store("person", "al", "bad knee", domain="dev")
+
+    out = mcp_server.memory_move("person:al", "person:al-health", ["bad knee", "nope"], domain="dev")
+
+    assert out == {
+        "source": "person:al", "target": "person:al-health", "domain": "dev",
+        "moved": ["bad knee"], "already": [], "unmatched": ["nope"], "carried": 0,
+        "created": True, "source_facts": 1, "target_facts": 1,
+    }
+    assert [f["text"] for f in mcp_server.memory_get("person:al-health", domain="dev")["facts"]] == ["bad knee"]
+    assert mcp_server.memory_get("person:al", domain="dev")["children"] == ["person:al-health"]
+
+
 # ── bi-temporal supersession via the MCP surface (issue #21) ──
 
 class TestMemoryStoreSupersession:

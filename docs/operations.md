@@ -54,6 +54,8 @@ your MCP client's `env` block, and `~/.config/kipp/env` for the timers.
 ```bash
 kipp expire                  # delete events past 30 days and facts past their expiry date
 kipp oversized               # list entities over 30 current facts, all domains
+kipp split-plan ID -o p.json # group an entity's facts into topic entities
+kipp split-apply p.json      # move them (dry run; --apply to write)
 kipp compact                 # lossy: delete all but each entity's top 20 facts
 kipp stats                   # point count for every collection
 kipp reindex                 # rebuild search vectors and fact points from stored facts
@@ -91,6 +93,53 @@ returns an `oversized` note and `kipp store` prints one: split it into topic
 entities named `<id>-<topic>` (`person:alice-health`, `person:alice-career`).
 Superseded facts don't count towards the 30. `kipp oversized` lists every
 entity over the line.
+
+### Splitting an entity
+
+```bash
+kipp backup
+kipp split-plan person:alice --domain personal -o alice.json
+# edit alice.json
+kipp split-apply alice.json            # dry run: what would move where
+kipp split-apply alice.json --apply
+```
+
+`split-plan` only reads. It groups the entity's current facts by topic
+(Ward clustering of their embeddings, about 12 facts per group; `--groups N`
+overrides) and writes JSON:
+
+```json
+{
+  "source": "person:alice",
+  "domain": "personal",
+  "groups": [
+    {"target": "person:alice-knee", "keywords": ["knee", "physio"], "facts": ["..."]}
+  ],
+  "keep": ["..."]
+}
+```
+
+Rename each `target`, move facts between groups, delete groups you don't
+want. Facts in `keep`, or in no group, stay on the source: leave its core
+identity there. Groups of fewer than 3 facts start out in `keep`. Each fact
+may appear only once.
+
+`split-apply` moves each group with the same code as the `memory_move` MCP
+tool:
+
+- Facts match by exact text and move unchanged: dates, source and hit count.
+- Superseded facts follow the fact that replaced them (by `superseded_by`).
+  Unlinked history stays on the source.
+- A target that doesn't exist is created with the type from its id and
+  `parent` set to the source. `kipp get` on the source lists its children.
+- The target is written before the facts leave the source. If a run is
+  interrupted, a fact can be on both, never on neither; run the same plan
+  again to finish. Facts already moved are reported as such.
+- Facts landing on an existing target are not similarity-merged, so a near
+  duplicate stays a separate fact.
+
+Deleting a parent leaves its children's `parent` pointing at nothing. Nothing
+follows parent links except `children` in `kipp get` and `memory_get`.
 
 `compact` still exists but deletes facts, so nothing schedules it. Use it
 only after a backup, and only when losing the lowest-scored facts is fine.
