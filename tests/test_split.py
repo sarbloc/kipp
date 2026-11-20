@@ -864,11 +864,13 @@ def test_facts_knocked_off_the_target_stay_on_the_source(client, emb, monkeypatc
                 real(client_, stale, emb, domain="personal", now=NOW)
 
     monkeypatch.setattr(split_mod, "write_entity", racing_store)
-    move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
-               domain="personal", now=NOW)
+    r = move_facts(client, emb, "person:alice", "person:alice-health", ["Allergic to penicillin."],
+                   domain="personal", now=NOW)
 
     assert "no longer on the target" in caplog.text
     assert "Allergic to penicillin." in _texts(get_entity(client, "person:alice", domain="personal"))
+    assert (r.moved, r.left) == ([], ["Allergic to penicillin."])
+    assert r.target_facts == (0 if clobber == "delete" else 1)
 
 
 def test_backdated_replacement_carries_its_history(client, emb):
@@ -912,4 +914,40 @@ def test_a_stale_target_write_that_drops_metadata_keeps_the_source_copy(client, 
     assert "no longer on the target" in caplog.text
     [kept] = get_entity(client, "person:alice", domain="personal").facts
     assert kept.hit_count == 9
+
+
+def _same_day_os():
+    return Entity(id="person:alice", type="person", facts=[
+        _fact("Uses Windows.", added="2026-11-20", superseded_at="2026-11-20", superseded_by="Uses Linux."),
+        _fact("Uses Linux.", added="2026-11-20", superseded_at="2026-11-20", superseded_by="Uses macOS."),
+        _fact("Uses macOS.", added="2026-11-20"),
+        _fact("Uses Linux.", added="2026-11-20"),
+    ])
+
+
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_an_ambiguous_link_stays_ambiguous_as_groups_move(client, emb, interrupted):
+    _seed(client, emb, _same_day_os())
+    plan = {"source": "person:alice", "domain": "personal", "groups": [
+        {"target": "person:alice-mac", "facts": ["Uses macOS."]},
+        {"target": "person:alice-linux", "facts": ["Uses Linux."]},
+    ], "keep": ["Uses Windows."]}
+    if interrupted:
+        apply_plan(client, emb, {**plan, "groups": plan["groups"][:1]}, now=NOW, apply=True)
+
+    apply_plan(client, emb, plan, now=NOW, apply=True)
+
+    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Uses Windows."]
+    assert _texts(get_entity(client, "person:alice-linux", domain="personal")) == ["Uses Linux."]
+
+
+@pytest.mark.parametrize("bad", [
+    [], {"source": "person:alice", "domain": "personal", "groups": {}},
+    {"source": "person:alice", "domain": "personal", "groups": [{"target": "person:alice-x", "facts": "ab"}]},
+    {"source": "person:alice", "domain": "personal", "groups": [{"target": 3, "facts": []}]},
+    {"source": "person:alice", "domain": "personal", "groups": [], "keep": [1]},
+])
+def test_validate_plan_rejects_wrong_types(bad):
+    with pytest.raises(ValueError):
+        validate_plan(bad)
 

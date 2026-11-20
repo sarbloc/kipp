@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from dataclasses import astuple, dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Sequence
 
 import numpy as np
 from qdrant_client import QdrantClient
@@ -76,6 +76,7 @@ class MoveResult:
     moved: list[str] = field(default_factory=list)      # requested texts moved now
     already: list[str] = field(default_factory=list)    # requested texts already on the target only
     unmatched: list[str] = field(default_factory=list)  # requested texts on neither
+    left: list[str] = field(default_factory=list)       # kept on the source: the target changed under the move
     carried: int = 0         # superseded facts that followed their replacement
     created: bool = False    # target didn't exist before
     source_facts: int = 0    # source's current facts afterwards
@@ -99,14 +100,18 @@ def check_parent(client: QdrantClient, entity_id: str, parent: str, *, domain: s
         raise ValueError(f"parent {parent} not found in domain {domain!r}")
 
 
-def select_facts(source: Entity, texts: list[str]) -> tuple[list[Fact], set[str], int]:
+def select_facts(
+    source: Entity, texts: list[str], elsewhere: Sequence[Fact] = (),
+) -> tuple[list[Fact], set[str], int]:
     """Facts of ``source`` that a move of ``texts`` takes along.
 
     A requested text selects the current facts with that text, never its
     history directly, so repeating a move takes nothing new. Then, until
     nothing changes, each superseded fact follows its replacement (see
     ``_replacement``) if that was selected: history goes where its
-    replacement goes.
+    replacement goes. ``elsewhere`` holds facts of related entities (the
+    target, a plan's other targets) that count when deciding whether a link
+    is ambiguous.
 
     Known gap (#26): ``superseded_by`` records the replacement text as
     stored, and a later merge can lengthen the surviving fact's wording;
@@ -119,8 +124,8 @@ def select_facts(source: Entity, texts: list[str]) -> tuple[list[Fact], set[str]
     picked = {i for i, f in enumerate(source.facts) if f.is_current and f.text in requested}
     matched = {source.facts[i].text for i in picked}
     direct = len(picked)
-    replaced_by = {i: _replacement(source.facts, i) for i, f in enumerate(source.facts)
-                   if not f.is_current}
+    replaced_by = {i: _replacement(source.facts, i, elsewhere)
+                   for i, f in enumerate(source.facts) if not f.is_current}
     while True:
         more = {i for i, r in replaced_by.items() if i not in picked and r in picked}
         if not more:
@@ -130,26 +135,44 @@ def select_facts(source: Entity, texts: list[str]) -> tuple[list[Fact], set[str]
     return facts, matched, len(picked) - direct
 
 
-def _replacement(facts: list[Fact], i: int) -> int | None:
+def _replacement(facts: list[Fact], i: int, elsewhere: Sequence[Fact] = ()) -> int | None:
     """Index of the fact that superseded ``facts[i]``, if it can be told.
 
     ``superseded_by`` is a text, and a text can recur (Linux, then macOS,
     then Linux again). The replacement is the latest occurrence of that text
     in effect (``valid_from``, else ``added``) on or before the supersession
-    date; a later reassertion isn't it. None when no occurrence qualifies or
-    two tie on that date: that history stays put rather than guess.
+    date; a later reassertion isn't it. Occurrences already moved to a
+    related entity (``elsewhere``; a copy of one still here counts once)
+    count too, so a link that was ambiguous stays ambiguous as groups move.
+    None when no occurrence on ``facts`` is the unique latest: that history
+    stays put rather than guess.
     """
     fact = facts[i]
     day = (fact.superseded_at or "")[:10]
-    dated = [
-        ((f.valid_from or f.added)[:10], j) for j, f in enumerate(facts)
-        if j != i and f.text == fact.superseded_by and (f.valid_from or f.added)[:10] <= day
-    ]
-    if not dated:
+
+    def when(f: Fact) -> str:
+        return (f.valid_from or f.added)[:10]
+
+    def candidate(f: Fact) -> bool:
+        return f.text == fact.superseded_by and when(f) <= day
+
+    here = [(when(f), j) for j, f in enumerate(facts) if j != i and candidate(f)]
+    copies = Counter(_copy_key(facts[j]) for _, j in here)
+    away = []
+    for f in elsewhere:
+        if not candidate(f):
+            continue
+        if copies[_copy_key(f)] > 0:
+            copies[_copy_key(f)] -= 1
+        else:
+            away.append(when(f))
+    dates = [d for d, _ in here] + away
+    if not dates:
         return None
-    latest = max(d for d, _ in dated)
-    best = [j for d, j in dated if d == latest]
-    return best[0] if len(best) == 1 else None
+    latest = max(dates)
+    if dates.count(latest) > 1:
+        return None
+    return next((j for d, j in here if d == latest), None)
 
 
 @contextmanager
@@ -184,10 +207,13 @@ def move_facts(
     domain: str,
     now: datetime,
     apply: bool = True,
+    related: Sequence[str] = (),
 ) -> MoveResult:
     """Move the facts of ``source_id`` whose text is in ``texts`` to ``target_id``.
 
     Texts match exactly; see ``select_facts`` for which facts a text takes.
+    ``related`` names other entities (a plan's other targets) whose facts
+    count when resolving history links.
     Each fact moves unchanged: same timestamps, provenance and hit count, no
     similarity merge on landing. A target that doesn't exist is created with
     the type from its id prefix and ``parent=source_id``; an existing target
@@ -215,15 +241,16 @@ def move_facts(
         raise ValueError("source and target are the same entity")
     if not apply:
         return _move(client, embedder, source_id, target_id, target_type, texts,
-                     domain=domain, now=now, apply=False)
+                     domain=domain, now=now, apply=False, related=related)
     with move_lock(domain):
         return _move(client, embedder, source_id, target_id, target_type, texts,
-                     domain=domain, now=now, apply=True)
+                     domain=domain, now=now, apply=True, related=related)
 
 
 def _move(
     client: QdrantClient, embedder: EmbedderLike, source_id: str, target_id: str,
     target_type: str, texts: list[str], *, domain: str, now: datetime, apply: bool,
+    related: Sequence[str],
 ) -> MoveResult:
     source = get_entity(client, source_id, domain=domain)
     if source is None:
@@ -233,7 +260,11 @@ def _move(
     if target is None:
         target = Entity(id=target_id, type=target_type, parent=source_id)
 
-    facts, matched, carried = select_facts(source, texts)
+    others = [
+        f for rid in dict.fromkeys(related) if rid not in (source_id, target_id)
+        for f in (get_entity(client, rid, domain=domain) or Entity(id=rid, type="")).facts
+    ]
+    facts, matched, carried = select_facts(source, texts, [*target.facts, *others])
     on_target = {f.text for f in target.facts}
     wanted = list(dict.fromkeys(texts))
     result.moved = [t for t in wanted if t in matched]
@@ -273,7 +304,7 @@ def _move(
         fresh = get_entity(client, source_id, domain=domain)
         if fresh is None:
             break  # deleted meanwhile: the facts are safe on the target; don't resurrect it
-        again, _, _ = select_facts(fresh, texts)
+        again, _, _ = select_facts(fresh, texts, [*target.facts, *others])
         if again == facts:
             break
         facts = again
@@ -286,8 +317,13 @@ def _move(
     if fresh is not None:
         # Remove only facts exactly as the target received them, and only
         # those still on it. One changed since stays on both.
-        safe = _still_on(get_entity(client, target_id, domain=domain), landed)
+        stored = get_entity(client, target_id, domain=domain)
+        safe = _still_on(stored, landed)
+        target = stored or Entity(id=target_id, type=target_type)
         if len(safe) < len(landed):
+            kept = {f.text for f in _without(landed, safe)}
+            result.left = [t for t in result.moved if t in kept]
+            result.moved = [t for t in result.moved if t not in kept]
             log.warning(
                 "move %s -> %s (%s): %d of %d facts were no longer on the target "
                 "after writing it; they stay on the source", source_id, target_id,
@@ -529,9 +565,23 @@ def plan_split(
 
 def validate_plan(plan: dict) -> None:
     """Raise ``ValueError`` on a plan that can't be applied as written."""
+    if not isinstance(plan, dict):
+        raise ValueError("a plan is a JSON object")
     for key in ("source", "domain", "groups"):
         if key not in plan:
             raise ValueError(f"plan is missing {key!r}")
+    if not isinstance(plan["source"], str) or not isinstance(plan["domain"], str):
+        raise ValueError("plan source and domain must be strings")
+    if not isinstance(plan["groups"], list) or not isinstance(plan.get("keep", []), list):
+        raise ValueError("plan groups and keep must be lists")
+    for g in plan["groups"]:
+        if not isinstance(g, dict) or not isinstance(g.get("target"), str):
+            raise ValueError(f"each group needs a string target: {g!r:.80}")
+        texts = g.get("facts", [])
+        if not isinstance(texts, list) or not all(isinstance(t, str) for t in texts):
+            raise ValueError(f"facts of {g['target']} must be a list of strings")
+    if not all(isinstance(t, str) for t in plan.get("keep", [])):
+        raise ValueError("keep must be a list of strings")
     validate_entity_id(plan["source"])
     seen_targets: set[str] = set()
     seen_texts: dict[str, str] = {}
@@ -567,10 +617,11 @@ def apply_plan(
         targets = {g["target"]: get_entity(client, g["target"], domain=plan["domain"])
                    for g in plan["groups"]}
         check_carried(plan, source, targets)
+    related = [g["target"] for g in plan["groups"]]
     return [
         move_facts(
             client, embedder, plan["source"], g["target"], g.get("facts", []),
-            domain=plan["domain"], now=now, apply=apply,
+            domain=plan["domain"], now=now, apply=apply, related=related,
         )
         for g in plan["groups"]
     ]
@@ -593,7 +644,8 @@ def check_carried(plan: dict, source: Entity, targets: dict[str, Entity | None])
     for g in plan["groups"]:
         listed.update({t: g["target"] for t in g.get("facts", [])})
     for g in plan["groups"]:
-        facts, _, _ = select_facts(source, g.get("facts", []))
+        elsewhere = [f for e in targets.values() if e is not None for f in e.facts]
+        facts, _, _ = select_facts(source, g.get("facts", []), elsewhere)
         for f in facts:
             where = listed.get(f.text, g["target"])
             if f.text in current or where == g["target"] or (where, f.text) in done:

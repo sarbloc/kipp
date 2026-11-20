@@ -301,8 +301,10 @@ def memory_move(
     on neither; calling again with the same arguments finishes the move.
 
     Returns ``moved`` (texts moved now), ``already`` (texts only on the target
-    already), ``unmatched`` (texts on neither entity), ``carried`` (superseded
-    facts moved with them), ``created`` and each side's current fact count.
+    already), ``unmatched`` (texts on neither entity), ``left`` (texts kept
+    on the source because a concurrent write changed the target: call again),
+    ``carried`` (superseded facts moved with them), ``created`` and each
+    side's current fact count.
     """
     _validate_domain(domain)
     client = get_client()
@@ -318,6 +320,7 @@ def memory_move(
         "moved": result.moved,
         "already": result.already,
         "unmatched": result.unmatched,
+        "left": result.left,
         "carried": result.carried,
         "created": result.created,
         "source_facts": result.source_facts,

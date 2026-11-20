@@ -273,7 +273,7 @@ def test_memory_move_tool(mcp_env):
 
     assert out == {
         "source": "person:al", "target": "person:al-health", "domain": "dev",
-        "moved": ["bad knee"], "already": [], "unmatched": ["nope"], "carried": 0,
+        "moved": ["bad knee"], "already": [], "unmatched": ["nope"], "left": [], "carried": 0,
         "created": True, "source_facts": 1, "target_facts": 1,
     }
     assert [f["text"] for f in mcp_server.memory_get("person:al-health", domain="dev")["facts"]] == ["bad knee"]
