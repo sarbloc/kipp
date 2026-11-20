@@ -167,13 +167,16 @@ def search_entities(
         client, query_vector, domain=domain, entity_type=entity_type,
         current_only=as_of is None, limit=max(FACT_FETCH, fetch_limit),
     )
-    _merge_fact_hits(client, results_map, fact_hits, domain=domain)
 
     text_results = _text_search(client, query, search_filter, fetch_limit, domain=domain)
     for sr in text_results:
         eid = sr.entity.id
         if eid not in results_map:
             results_map[eid] = sr
+
+    # After the keyword fallback, so a keyword-only hit keeps its flat score
+    # when its best fact scores lower.
+    _merge_fact_hits(client, results_map, fact_hits, domain=domain)
 
     ranked = sorted(results_map.values(), key=lambda r: r.score, reverse=True)
 

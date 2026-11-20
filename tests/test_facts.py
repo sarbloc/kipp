@@ -473,3 +473,25 @@ def test_search_facts_is_not_crowded_out_by_many_fact_entities(client):
 
     assert list(hits)[-1] == "person:quiet"
     assert all(len(v) <= 10 for v in hits.values())
+
+
+def test_keyword_fallback_score_survives_a_weaker_fact_hit(client):
+    """An entity found only by keyword keeps its 0.5 when its best fact is weaker."""
+    q = _unit(0)
+    target = _entity("project:zephyr", ("Zephyr rollout notes.",))
+    weak = [0.0] * DIMS
+    weak[0], weak[1] = 0.1, math.sqrt(1 - 0.01)
+    emb = _Embedder({"zephyr": q, fact_vector_text(target, target.facts[0]): weak})
+    write_entity(client, target, emb)
+    upsert_entity(client, target, _unit(1))  # entity vector misses the query
+    for i in range(3):
+        decoy = _entity(f"person:decoy{i}", (f"Decoy fact {i}.",))
+        write_entity(client, decoy, emb)
+        v = [0.0] * DIMS
+        v[0], v[2 + i] = 0.4, math.sqrt(1 - 0.16)
+        upsert_entity(client, decoy, v)
+
+    (hit,) = search_entities(client, "zephyr", emb, limit=1)
+
+    assert hit.entity.id == "project:zephyr"
+    assert hit.score == pytest.approx(0.5)
