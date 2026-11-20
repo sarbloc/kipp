@@ -270,6 +270,20 @@ class TestMemoryStoreSupersession:
         assert "lives in Berlin" in texts
         assert "lives in London" not in texts
 
+    def test_search_trims_facts_per_hit(self, mcp_env):
+        total = mcp_server.SEARCH_FACTS_PER_HIT + 5
+        for i in range(total):
+            mcp_server.memory_store("project", "big", f"big project fact {i}", domain="shared")
+        mcp_server.memory_store("project", "small", "small project fact", domain="shared")
+
+        hits = {h["id"]: h for h in mcp_server.memory_search("project fact", domain="shared")}
+        big, small = hits["project:big"], hits["project:small"]
+        assert len(big["facts"]) == mcp_server.SEARCH_FACTS_PER_HIT
+        assert big["facts_omitted"] == 5
+        assert "facts_omitted" not in small
+        # memory_get is the full record.
+        assert len(mcp_server.memory_get("project:big", domain="shared")["facts"]) == total
+
     def test_search_as_of_returns_historical_state(self, mcp_env, embedder):
         client = mcp_env
         # Seed with explicit dates so the as-of window is deterministic.
