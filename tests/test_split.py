@@ -993,3 +993,15 @@ def test_a_fact_changing_on_every_attempt_is_reported_left(client, emb, monkeypa
     assert (r.moved, r.left) == ([], ["Allergic to penicillin."])
     assert "Allergic to penicillin." in _texts(get_entity(client, "person:alice", domain="personal"))
 
+
+def test_an_incremental_plan_after_earlier_moves_is_not_rejected(client, emb):
+    _seed(client, emb, _same_day_os())
+    move_facts(client, emb, "person:alice", "person:alice-mac", ["Uses macOS."], domain="personal", now=NOW)
+    plan = {"source": "person:alice", "domain": "personal",
+            "groups": [{"target": "person:alice-linux", "facts": ["Uses Linux."]}],
+            "keep": ["Uses Windows."]}
+
+    apply_plan(client, emb, plan, now=NOW, apply=True)
+
+    assert _texts(get_entity(client, "person:alice", domain="personal")) == ["Uses Windows."]
+

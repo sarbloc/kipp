@@ -629,7 +629,12 @@ def apply_plan(
     if source is not None:
         targets = {g["target"]: get_entity(client, g["target"], domain=plan["domain"])
                    for g in plan["groups"]}
-        check_carried(plan, source, targets)
+        children = [
+            get_entity(client, cid, domain=plan["domain"])
+            for cid in list_children(client, plan["source"], domain=plan["domain"])
+            if cid not in targets
+        ]
+        check_carried(plan, source, targets, [c for c in children if c is not None])
     related = [g["target"] for g in plan["groups"]]
     return [
         move_facts(
@@ -640,13 +645,17 @@ def apply_plan(
     ]
 
 
-def check_carried(plan: dict, source: Entity, targets: dict[str, Entity | None]) -> None:
+def check_carried(
+    plan: dict, source: Entity, targets: dict[str, Entity | None],
+    children: Sequence[Entity] = (),
+) -> None:
     """Reject a plan that files history somewhere other than where it would go.
 
     History moves with its replacement. If a text with only history left on
     the source is also listed in ``keep``, or in another group whose target
     doesn't already hold it as current (a group finished on an earlier run
-    does), the plan says two things: raise rather than pick one.
+    does), the plan says two things: raise rather than pick one. History is
+    resolved as ``move_facts`` resolves it, counting the source's children.
     """
     current = {f.text for f in source.facts if f.is_current}
     done = {
@@ -657,7 +666,7 @@ def check_carried(plan: dict, source: Entity, targets: dict[str, Entity | None])
     for g in plan["groups"]:
         listed.update({t: g["target"] for t in g.get("facts", [])})
     for g in plan["groups"]:
-        elsewhere = [f for e in targets.values() if e is not None for f in e.facts]
+        elsewhere = [f for e in [*targets.values(), *children] if e is not None for f in e.facts]
         facts, _, _ = select_facts(source, g.get("facts", []), elsewhere)
         for f in facts:
             where = listed.get(f.text, g["target"])
