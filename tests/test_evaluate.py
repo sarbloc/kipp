@@ -67,6 +67,16 @@ def test_example_case_file_parses():
     assert cases and all(c.expected == frozenset({"person:alice"}) for c in cases)
 
 
+def test_cli_rejects_k_below_hit_cutoff(tmp_path):
+    from click.testing import CliRunner
+
+    from kipp.cli import main
+
+    p = write(tmp_path, '{"query": "q", "expected": "person:a"}\n')
+    r = CliRunner().invoke(main, ["eval", str(p), "--k", "4"])
+    assert r.exit_code == 2 and "--k" in r.output
+
+
 def test_rank_of():
     assert rank_of(frozenset({"b"}), ["a", "b", "c"]) == 2
     assert rank_of(frozenset({"c", "a"}), ["a", "b", "c"]) == 1

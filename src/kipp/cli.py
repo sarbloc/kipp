@@ -200,7 +200,10 @@ def search(query: str, entity_type: str | None, limit: int, as_of: str | None):
 @click.argument(
     "case_file", required=False, type=click.Path(dir_okay=False, exists=True, path_type=Path),
 )
-@click.option("--k", default=10, show_default=True, help="Results fetched per question")
+@click.option(
+    "--k", default=10, show_default=True, type=click.IntRange(min=5),
+    help="Results fetched per question (at least 5, so hit@5 is measurable)",
+)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
 def eval_cmd(case_file: Path | None, k: int, as_json: bool):
     """Score search recall against known-answer questions. Read-only.

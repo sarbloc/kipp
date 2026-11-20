@@ -59,6 +59,7 @@ The three kinds:
 | `extract.py` | Event → entity extraction (sentence splitting, matching) |
 | `search.py` | Vector + text + filter search fusion |
 | `export.py` | Export/import (JSON and markdown formats) |
+| `evaluate.py` | `kipp eval`: recall scoring against a JSONL known-answer case file |
 | `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |
 
 ### MCP entrypoint
