@@ -55,7 +55,7 @@ The three kinds:
 | `client.py` | Qdrant client wrapper, collection initialization, domain-aware CRUD |
 | `embedder.py` | sentence-transformers wrapper |
 | `models.py` | Dataclasses: Fact, Entity, Event |
-| `merge.py` | Merge, compact, dedup, search text generation |
+| `merge.py` | Merge, compact, dedup, search text (keyword payload) and vector text (clipped, issue #49) |
 | `extract.py` | Event → entity extraction (sentence splitting, matching) |
 | `search.py` | Vector + text + filter search fusion |
 | `export.py` | Export/import (JSON and markdown formats) |

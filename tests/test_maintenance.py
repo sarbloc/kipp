@@ -12,12 +12,14 @@ from kipp.client import (
     DOMAINS,
     collection_name,
     ensure_collections,
+    entity_point_id,
     get_entity,
     store_event,
     upsert_entity,
 )
 from kipp.embedder import MockEmbedder
-from kipp.maintenance import compact_domain, expire_events, expire_facts
+from kipp.maintenance import compact_domain, expire_events, expire_facts, reindex_domain
+from kipp.merge import build_search_text, build_vector_text
 from kipp.models import Entity, Fact
 
 NOW = datetime(2026, 11, 19, 12, 0, 0)
@@ -124,3 +126,70 @@ def test_cli_expire_defaults_to_shared_and_all_covers_every_domain(client, emb, 
     assert all(_ids(client, d) == set() for d in DOMAINS)
     assert "[dev] Expired 1 events" in res.output
     assert "[personal] Expired 1 events" in res.output
+
+
+def _point(client, coll, eid):
+    (p,) = client.retrieve(coll, ids=[entity_point_id(eid)], with_payload=True, with_vectors=True)
+    return p
+
+
+def test_reindex_rebuilds_vector_and_search_text_without_touching_facts(client, emb):
+    long_fact = " ".join(f"w{i}" for i in range(60))
+    e = Entity(id="project:p", type="project",
+               facts=[Fact(text=long_fact, added="2026-11-01", source="t")])
+    d = Entity(id="decision:d", type="decision",
+               facts=[Fact(text="use qdrant", added="2026-11-01", source="t")])
+    upsert_entity(client, e, emb.embed("stale"), domain="dev")
+    upsert_entity(client, d, emb.embed("stale"), domain="dev")
+    upsert_entity(client, e, emb.embed("stale"), domain="shared")
+    client.set_payload(collection_name("dev", "entities"), {"search_text": "old"},
+                       points=[entity_point_id("project:p")])
+    before = get_entity(client, "project:p", domain="dev").facts
+
+    assert reindex_domain(client, emb, "dev", NOW) == 2
+
+    p = _point(client, collection_name("dev", "entities"), "project:p")
+    assert p.vector == pytest.approx(emb.embed(build_vector_text(e, now=NOW)))
+    assert p.payload["search_text"] == build_search_text(e, now=NOW)
+    assert get_entity(client, "project:p", domain="dev").facts == before
+    dp = _point(client, collection_name("dev", "decisions"), "decision:d")
+    assert dp.vector == pytest.approx(emb.embed(build_vector_text(d, now=NOW)))
+    # Other domains are untouched.
+    sp = _point(client, collection_name("shared", "entities"), "project:p")
+    assert sp.vector == pytest.approx(emb.embed("stale"))
+
+
+def test_cli_reindex_all_domains(client, emb, monkeypatch):
+    monkeypatch.setattr(cli_mod, "get_client", lambda: client)
+    monkeypatch.setattr(cli_mod, "_get_embedder", lambda: emb)
+    for dom in DOMAINS:
+        upsert_entity(client, _entity("person:a", 2), emb.embed("x"), domain=dom)
+    res = CliRunner().invoke(cli_mod.main, ["reindex", "--domain", "all"])
+    assert res.exit_code == 0, res.output
+    assert all(f"[{dom}] Re-embedded 1 entities." in res.output for dom in DOMAINS)
+
+
+def test_reindex_rebuilds_from_fresh_facts_when_a_store_lands_mid_pass(client, emb, monkeypatch):
+    old = Entity(id="person:a", type="person",
+                 facts=[Fact(text="lives in London", added="2026-11-01", source="t")])
+    new = Entity(id="person:a", type="person",
+                 facts=[Fact(text="lives in Berlin", added="2026-11-01", source="t")])
+    upsert_entity(client, old, emb.embed("stale"), domain="dev")
+
+    real_update = client.update_vectors
+    calls = []
+
+    def racing_update(*args, **kwargs):
+        calls.append(1)
+        real_update(*args, **kwargs)
+        if len(calls) == 1:  # a memory_store lands right after our first write
+            upsert_entity(client, new, emb.embed("writer"), domain="dev")
+
+    monkeypatch.setattr(client, "update_vectors", racing_update)
+    assert reindex_domain(client, emb, "dev", NOW) == 1
+
+    p = _point(client, collection_name("dev", "entities"), "person:a")
+    assert len(calls) == 2
+    assert p.vector == pytest.approx(emb.embed(build_vector_text(new, now=NOW)))
+    assert "Berlin" in p.payload["search_text"] and "London" not in p.payload["search_text"]
+    assert [f.text for f in get_entity(client, "person:a", domain="dev").facts] == ["lives in Berlin"]

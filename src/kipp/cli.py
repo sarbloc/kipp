@@ -24,8 +24,8 @@ from kipp.client import (
     upsert_entity,
 )
 from kipp.extract import MATCH_THRESHOLD
-from kipp.maintenance import compact_domain, expire_events, expire_facts
-from kipp.merge import build_search_text, mark_superseded, merge
+from kipp.maintenance import compact_domain, expire_events, expire_facts, reindex_domain
+from kipp.merge import build_vector_text, long_fact_warning, mark_superseded, merge
 from kipp.models import Entity, Fact
 from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 
@@ -113,8 +113,7 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
     new_fact = Fact(text=content, added=today, source="cli:store", valid_from=valid_from)
     merged = merge(existing, [new_fact], embedder, now=now)
 
-    search_text = build_search_text(merged)
-    vector = embedder.embed(search_text)
+    vector = embedder.embed(build_vector_text(merged))
     upsert_entity(client, merged, vector)
 
     current_facts = sum(1 for f in merged.facts if f.is_current)
@@ -124,6 +123,9 @@ def store(entity_type: str, entity_id: str, content: str, supersedes: str | None
             click.echo(f"  Superseded: {superseded!r}")
         else:
             click.echo(f"  No current fact matched --supersedes {supersedes!r}")
+    warning = long_fact_warning(content)
+    if warning:
+        click.echo(f"  Warning: {warning}", err=True)
 
 
 @main.command()
@@ -451,6 +453,23 @@ def expire(domain: str):
         )
 
 
+@main.command()
+@_maintenance_domain
+def reindex(domain: str):
+    """Rebuild every entity's search vector from its current facts.
+
+    Run after upgrading to a version that changes how vectors are built.
+    Facts are not modified.
+    """
+    client = get_client()
+    embedder = _get_embedder()
+    now = datetime.utcnow()
+
+    for d in _resolve_domains(domain):
+        n = reindex_domain(client, embedder, d, now)
+        click.echo(f"[{d}] Re-embedded {n} entities.")
+
+
 @main.command(name="export")
 @click.option("--format", "fmt", type=click.Choice(["json", "md"]), default="json", help="Output format")
 def export_cmd(fmt: str):
@@ -496,7 +515,7 @@ def import_cmd(file: str):
             existing = Entity(id=entity.id, type=entity.type)
 
         merged = merge(existing, entity.facts, embedder, now=now)
-        vector = embedder.embed(build_search_text(merged))
+        vector = embedder.embed(build_vector_text(merged))
         upsert_entity(client, merged, vector)
 
     click.echo(f"Imported {len(imported)} entities.")

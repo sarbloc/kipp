@@ -86,9 +86,10 @@ is filed onto that entity automatically by `memory_extract`:
 
 ### Writing good facts
 
-- **One sentence, one fact.** The embedding model reads at most 256 tokens of
-  an entity's top facts. A paragraph-long fact pushes everything after it out
-  of search.
+- **One sentence, one fact, key words first.** Search reads only the first 16
+  words of each of an entity's top 10 facts. The rest of a paragraph-long fact
+  is stored and returned, but search never sees it. `memory_store` returns a
+  `warning` for any fact over 40 words.
 - **Self-contained.** Write "Alice leads the billing team", not "She leads
   it".
 - **Stable ids.** `project:billing-api` every time. A second id for the same

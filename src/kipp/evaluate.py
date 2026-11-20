@@ -9,8 +9,8 @@ A case file is JSON Lines, one question per line:
 - ``expected``: the entity id (or ids, any of which counts) that should answer.
 - ``domain``: defaults to ``shared``.
 - ``fact``: optional substring of the fact that answers the question. When set,
-  the report says whether that fact falls inside the embedding window of the
-  entity's search text, which is what issue #49 is about.
+  the report says whether that text reaches the entity's dense vector: present
+  in the embedded vector text and inside the model's window (issue #49).
 
 Everything here is read-only. Case files built from real memory hold personal
 data: keep them outside the repo (the default is ~/.config/kipp/eval.jsonl).
@@ -26,7 +26,7 @@ from typing import Callable
 from qdrant_client import QdrantClient
 
 from kipp.client import DOMAINS, _xdg_config_home, get_entity
-from kipp.merge import build_search_text
+from kipp.merge import build_search_text, build_vector_text
 from kipp.search import EmbedderLike, search_entities
 
 HIT_AT = (1, 5)
@@ -92,17 +92,25 @@ def rank_of(expected: frozenset[str], result_ids: list[str]) -> int | None:
 
 
 def fact_window(
-    search_text: str, fact: str, count_tokens: Callable[[str], int], window: int,
+    search_text: str,
+    vector_text: str,
+    fact: str,
+    count_tokens: Callable[[str], int],
+    window: int,
 ) -> str:
-    """Whether ``fact`` starts inside the first ``window`` tokens of ``search_text``.
+    """Whether ``fact`` reaches the entity's dense vector.
 
-    Returns "in", "out", or "unknown" when the fact isn't in the search text at
-    all (it may rank below the top 10 facts, or the substring is wrong).
+    "in": it appears in ``vector_text`` and starts inside its first ``window``
+    tokens. "out": it is among the entity's top facts (``search_text``) but is
+    clipped off or truncated before the model reads it. "unknown": not in the
+    top facts at all (it may rank below them, or the substring is wrong).
     """
-    start = search_text.lower().find(fact.lower())
-    if start < 0:
+    needle = " ".join(fact.lower().split())
+    if needle not in " ".join(search_text.lower().split()):
         return "unknown"
-    return "in" if count_tokens(search_text[:start]) < window else "out"
+    # build_vector_text collapses each fact's whitespace; match it the same way.
+    start = vector_text.lower().find(needle)
+    return "in" if start >= 0 and count_tokens(vector_text[:start]) < window else "out"
 
 
 def run_case(
@@ -115,9 +123,9 @@ def run_case(
 ) -> CaseResult:
     """Search for one case and locate its answer. Read-only.
 
-    The window check rebuilds the entity's search text with today's fact
-    scores, so it can differ slightly from the text the stored vector was
-    built from at the entity's last write.
+    The window check rebuilds the entity's texts with today's fact scores, so
+    it can differ slightly from the text the stored vector was built from at
+    the entity's last write.
     """
     hits = search_entities(client, case.query, embedder, limit=k, domain=case.domain)
     top = [h.entity.id for h in hits]
@@ -128,7 +136,8 @@ def run_case(
             if entity is None:
                 continue
             result.window = fact_window(
-                build_search_text(entity), case.fact, count_tokens, window,
+                build_search_text(entity), build_vector_text(entity),
+                case.fact, count_tokens, window,
             )
             if result.window != "unknown":
                 break

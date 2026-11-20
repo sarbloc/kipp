@@ -11,9 +11,10 @@ from datetime import datetime
 from typing import Protocol
 
 from qdrant_client import QdrantClient
+from qdrant_client.models import PointVectors
 
-from kipp.client import collection_name, scroll_entities, upsert_entity
-from kipp.merge import MAX_FACTS, build_search_text, compact, drop_expired
+from kipp.client import collection_name, point_to_entity, scroll_entities, upsert_entity
+from kipp.merge import MAX_FACTS, build_search_text, build_vector_text, compact, drop_expired
 
 
 class EmbedderLike(Protocol):
@@ -62,7 +63,7 @@ def expire_facts(
         if len(entity.facts) < before:
             entity.last_updated = now.isoformat()
             upsert_entity(
-                client, entity, embedder.embed(build_search_text(entity, now=now)),
+                client, entity, embedder.embed(build_vector_text(entity, now=now)),
                 domain=domain,
             )
             updated += 1
@@ -86,8 +87,78 @@ def compact_domain(
             continue
         entity = compact(entity, max_facts=max_facts, now=now)
         upsert_entity(
-            client, entity, embedder.embed(build_search_text(entity, now=now)),
+            client, entity, embedder.embed(build_vector_text(entity, now=now)),
             domain=domain,
         )
         compacted += 1
     return compacted
+
+
+def reindex_domain(
+    client: QdrantClient, embedder: EmbedderLike, domain: str, now: datetime,
+) -> int:
+    """Rebuild the vector and ``search_text`` payload of every entity in ``domain``.
+
+    Vectors are only rebuilt when an entity is written, so a change to how they
+    are built (``build_vector_text``, issue #49) reaches stored entities only
+    through this pass. Facts are never rewritten: only the vector and the
+    ``search_text`` payload are set. See ``_reindex_point`` for how a store
+    that lands mid-pass is handled.
+
+    Returns the number of entities re-embedded.
+    """
+    count = 0
+    for kind in ("entities", "decisions"):
+        coll = collection_name(domain, kind)
+        if not client.collection_exists(coll):
+            continue
+        offset = None
+        while True:
+            points, offset = client.scroll(
+                collection_name=coll, limit=100, offset=offset, with_payload=True,
+            )
+            for p in points:
+                _reindex_point(client, embedder, coll, p, now)
+                count += 1
+            if offset is None:
+                break
+    return count
+
+
+REINDEX_ATTEMPTS = 5
+
+
+def _reindex_point(
+    client: QdrantClient, embedder: EmbedderLike, coll: str, point, now: datetime,
+) -> None:
+    """Set one point's vector and ``search_text`` from its facts, race-safely.
+
+    A concurrent writer (``memory_store``, extraction) may upsert the point
+    between our read and our writes; ours would then pin a stale vector and
+    keyword text onto its newer facts. So after writing, re-read the point
+    and, if its facts changed, rebuild from the fresh copy. A writer that
+    lands after our final re-read upserts its own consistent vector, so it
+    can't be left stale either.
+    """
+    for _ in range(REINDEX_ATTEMPTS):
+        entity = point_to_entity(point)
+        client.update_vectors(
+            collection_name=coll,
+            points=[PointVectors(id=point.id, vector=embedder.embed(build_vector_text(entity, now=now)))],
+        )
+        client.set_payload(
+            collection_name=coll,
+            payload={"search_text": build_search_text(entity, now=now)},
+            points=[point.id],
+        )
+        fresh = client.retrieve(coll, ids=[point.id], with_payload=True)
+        if not fresh or fresh[0].payload.get("facts") == point.payload.get("facts"):
+            return
+        point = fresh[0]
+    # Qdrant has no compare-and-set, so a writer hitting this one entity on every
+    # attempt can still win the last race. Stop loudly rather than continue: the
+    # entity's vector may now be stale, and a re-run (or its next write) fixes it.
+    raise RuntimeError(
+        f"reindex: {coll}/{point.payload.get('entity_id')} changed on each of "
+        f"{REINDEX_ATTEMPTS} attempts, so its vector may be stale; re-run kipp reindex"
+    )
