@@ -1,0 +1,137 @@
+# Running KIPP
+
+Configuration, housekeeping and backups for a KIPP install. Finish the
+[quick start](../README.md#quick-start) first.
+
+## Configuration
+
+With no configuration, KIPP talks to Qdrant at `http://127.0.0.1:6333` without
+an API key, which is what the bundled `docker-compose.yml` runs.
+
+Environment variables override that, no file needed:
+
+| Variable | Meaning |
+|----------|---------|
+| `QDRANT_URL` | Qdrant endpoint. Takes precedence over any config file. |
+| `QDRANT_API_KEY` | API key, if your Qdrant requires one. |
+| `KIPP_CONFIG` | Path to a config file, replacing the default location. |
+
+Or write `~/.config/kipp/config.json` (under `$XDG_CONFIG_HOME` if that's set
+to an absolute path):
+
+```json
+{
+  "qdrant": {
+    "url": "http://127.0.0.1:6333",
+    "api_key_env": "QDRANT_API_KEY"
+  }
+}
+```
+
+`api_key_env` names the environment variable that holds the key, so the key
+itself never sits in the file. The pre-rename paths,
+`~/.config/entity-memory/config.json` then `~/.openclaw/memory.json`, are
+still read, in that order, if the new one is missing.
+
+The CLI, the MCP server and the systemd units all read the same settings, so
+configure it once.
+
+### Requiring an API key
+
+The bundled compose file leaves Qdrant open on localhost. To require a key,
+start it with one set:
+
+```bash
+export QDRANT_API_KEY="$(openssl rand -hex 32)"
+docker compose up -d --wait
+```
+
+Then make the same `QDRANT_API_KEY` visible to every KIPP process: your shell,
+your MCP client's `env` block, and `~/.config/kipp/env` for the timers.
+
+## Housekeeping
+
+```bash
+kipp expire                  # delete events past 30 days and facts past their expiry date
+kipp compact                 # trim entities that are over the 20-fact cap
+kipp stats                   # point count for every collection
+```
+
+`expire` and `compact` default to the `shared` domain. Pass
+`--domain dev`, `--domain personal` or `--domain all`.
+
+Writes don't compact, so an entity can grow past 20 facts until `compact`
+runs. Run `expire` daily (see [systemd timers](#systemd-timers)) and
+`compact --domain all` now and then, for example weekly from cron.
+
+## Backup and restore
+
+```bash
+kipp backup
+```
+
+This takes a native Qdrant snapshot of every collection in every domain and:
+
+- downloads it to `~/backups/qdrant/<UTC stamp>/`;
+- checks each file against the sha256 that Qdrant reports;
+- writes a `manifest.json` of point counts and digests;
+- deletes the server-side copy.
+
+The newest 3 backups are kept. `--keep N` changes that and `--dest DIR` moves
+them. A failed run leaves nothing under a stamp name, so every stamp directory
+is a complete backup.
+
+The backups sit on the same disk as the data. They cover a bad migration or an
+accidental delete, not a dead drive. Copy the directory elsewhere if you need
+that.
+
+To restore one collection, replacing its contents:
+
+```bash
+curl -X POST "http://127.0.0.1:6333/collections/<name>/snapshots/upload?priority=snapshot" \
+     -H "api-key: $QDRANT_API_KEY" \
+     -F snapshot=@$HOME/backups/qdrant/<stamp>/<name>.snapshot
+```
+
+Collection names are listed in the backup's `manifest.json`.
+
+## systemd timers
+
+`contrib/systemd/` has two user timers:
+
+| Timer | Runs |
+|-------|------|
+| `kipp-expire.timer` | `kipp expire --domain all`, daily at 03:30 |
+| `kipp-backup.timer` | `kipp backup`, daily at 04:45, after expiry |
+
+Install them from the repo checkout:
+
+```bash
+cp contrib/systemd/kipp-*.service contrib/systemd/kipp-*.timer ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now kipp-expire.timer kipp-backup.timer
+systemctl --user list-timers 'kipp-*'
+```
+
+- **Binary path.** The units run `~/.local/bin/kipp`, where pipx puts it. If
+  yours is elsewhere, edit `ExecStart` in both `.service` files.
+- **Environment.** If you set `QDRANT_URL` or `QDRANT_API_KEY`, put them in
+  `~/.config/kipp/env` as `KEY=value` lines. The units read that file.
+- **Without a login session.** User timers only run while you're logged in,
+  unless you enable lingering: `loginctl enable-linger "$USER"`.
+
+On macOS, run the same two commands from `launchd` or `cron`.
+
+### Moving from entity-memory units
+
+Older installs have `entity-memory-expire` and `entity-memory-backup` units.
+They keep working, because they call `memory`, which is now an alias for
+`kipp`. To switch to the new names:
+
+```bash
+systemctl --user disable --now entity-memory-expire.timer entity-memory-backup.timer
+rm ~/.config/systemd/user/entity-memory-{expire,backup}.{service,timer}
+```
+
+Then install the `kipp-*` units as above. They also read the old
+`~/.config/entity-memory/env`, so existing settings carry over.
