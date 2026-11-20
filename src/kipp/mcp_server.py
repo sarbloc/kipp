@@ -36,6 +36,7 @@ from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 from kipp.search import format_results, search_entities
 
 EVENT_TTL_DAYS = 30
+SEARCH_FACTS_PER_HIT = 10
 
 mcp = FastMCP("kipp")
 
@@ -197,6 +198,9 @@ def memory_search(
     """Semantic search across entities and decisions in a domain.
 
     Returns hits sorted by score, each with the entity payload and score.
+    Each hit carries at most 10 facts, best match for the query first; when
+    more exist, ``facts_omitted`` says how many were left out. Use
+    ``memory_get`` for every fact.
 
     Superseded facts are hidden by default (issue #21). Pass ``as_of`` (an ISO
     date, e.g. "2025-06-01") to see each entity as it was on that date — facts
@@ -215,10 +219,22 @@ def memory_search(
         client, query, embedder, entity_type=entity_type, limit=limit,
         domain=domain, as_of=as_of,
     )
-    return [
-        {"score": r.score, **_entity_to_dict(r.entity)}
-        for r in results
-    ]
+    return [_search_hit(r.score, r.entity) for r in results]
+
+
+def _search_hit(score: float, entity: Entity) -> dict[str, Any]:
+    """One search result, trimmed to the query's top facts.
+
+    Entities are uncapped (#52), so a hit can carry 100+ facts; returning them
+    all made search responses too large for MCP clients. ``search_entities``
+    already ranks facts best-first for the query, so the head is what matters.
+    """
+    hit = {"score": score, **_entity_to_dict(entity)}
+    omitted = len(hit["facts"]) - SEARCH_FACTS_PER_HIT
+    if omitted > 0:
+        hit["facts"] = hit["facts"][:SEARCH_FACTS_PER_HIT]
+        hit["facts_omitted"] = omitted
+    return hit
 
 
 @mcp.tool()
