@@ -334,6 +334,62 @@ def test_resuming_after_the_source_superseded_the_fact_leaves_no_current_copy(cl
     }
 
 
+def test_history_does_not_retire_a_separate_assertion_on_the_target(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Lives in Leeds.", added="2026-03-01"),
+        _fact("Lives in York.", added="2020-01-01", superseded_at="2026-03-01", superseded_by="Lives in Leeds."),
+    ]))
+    _seed(client, emb, Entity(id="person:alice-home", type="person", facts=[
+        _fact("Lives in York.", added="2026-11-01", source="cli:store"),
+    ]))
+
+    move_facts(client, emb, "person:alice", "person:alice-home", ["Lives in Leeds."], domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-home", domain="personal")
+    assert [(f.text, f.added, f.is_current) for f in target.facts] == [
+        ("Lives in York.", "2026-11-01", True),
+        ("Lives in Leeds.", "2026-03-01", True),
+        ("Lives in York.", "2020-01-01", False),
+    ]
+
+
+def test_resuming_after_the_target_superseded_the_copy_keeps_it_retired(client, emb, monkeypatch):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[_fact("Works at Initech.")]))
+    real = split_mod.write_entity
+
+    def crash_on_source(client_, entity, *a, **kw):
+        if entity.id == "person:alice":
+            raise RuntimeError("killed")
+        real(client_, entity, *a, **kw)
+
+    monkeypatch.setattr(split_mod, "write_entity", crash_on_source)
+    with pytest.raises(RuntimeError):
+        move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+                   domain="personal", now=NOW)
+    monkeypatch.setattr(split_mod, "write_entity", real)
+    target = get_entity(client, "person:alice-work", domain="personal")
+    mark_superseded(target, "Works at Initech.", by="Works at Acme.", on_date="2026-11-20")
+    target.facts.append(_fact("Works at Acme."))
+    _seed(client, emb, target)
+
+    move_facts(client, emb, "person:alice", "person:alice-work", ["Works at Initech."],
+               domain="personal", now=NOW)
+
+    target = get_entity(client, "person:alice-work", domain="personal")
+    assert [(f.text, f.is_current) for f in target.facts] == [
+        ("Works at Initech.", False), ("Works at Acme.", True),
+    ]
+    assert get_entity(client, "person:alice", domain="personal").facts == []
+
+
+def test_identical_facts_on_the_source_both_move(client, emb):
+    _seed(client, emb, Entity(id="person:alice", type="person", facts=[
+        _fact("Said hello."), _fact("Said hello.", superseded_at="2026-05-01"), _fact("Said hello."),
+    ]))
+    move_facts(client, emb, "person:alice", "person:alice-x", ["Said hello."], domain="personal", now=NOW)
+    assert len(get_entity(client, "person:alice-x", domain="personal").facts) == 3
+
+
 def test_existing_target_keeps_parent_and_facts_are_not_merged(client, emb):
     _seed(client, emb, _alice())
     _seed(client, emb, Entity(id="person:alice-work", type="person", parent="person:bob",

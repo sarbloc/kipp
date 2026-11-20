@@ -220,43 +220,58 @@ def move_facts(
     return result
 
 
+def _copy_key(fact: Fact) -> tuple:
+    """What a moved copy keeps no matter what happens to it later: a store
+    superseding it changes its identity (``fact_key``) but not this."""
+    return (fact.text, fact.valid_from, fact.added, fact.source)
+
+
 def _land(target: Entity, facts: list[Fact]) -> None:
-    """Append ``facts`` to ``target``, merging any it already holds.
+    """Append ``facts`` to ``target``, merging copies it already holds.
 
-    A fact already on the target with the same identity was left there by an
-    interrupted move (or filed twice). The pair becomes one fact keeping the
-    stronger of each field, so no lifetime, validity or hit is lost.
-
-    A superseded fact whose text the target holds as a current fact (same
-    ``valid_from``) supersedes that copy: an interrupted move left it, and
-    the source has since retired the claim. Keeping it current would revive it.
+    A fact on the target with the same identity, or the same text, dates and
+    source but superseded on one side only, is a copy left by an interrupted
+    move (or filed twice). The pair becomes one fact keeping the stronger of
+    each field, so no lifetime, validity or hit is lost; superseded wins, so a
+    claim retired on either side since the copy was made stays retired. Each
+    target fact absorbs at most one incoming fact; the rest are appended, so
+    separate assertions of the same text stay separate.
     """
+    used: set[int] = set()
     held = {fact_key(f): i for i, f in enumerate(target.facts)}
-    live = {(f.text, f.valid_from): i for i, f in enumerate(target.facts) if f.is_current}
+    pending = []
     for fact in facts:
         i = held.get(fact_key(fact))
-        if i is None and not fact.is_current:
-            i = live.get((fact.text, fact.valid_from))
+        if i is None or i in used:
+            pending.append(fact)
+            continue
+        _absorb(target, i, fact)
+        used.add(i)
+    copies: dict[tuple, int] = {}
+    for i, f in enumerate(target.facts):
+        if i not in used:
+            copies.setdefault(_copy_key(f), i)
+    for fact in pending:
+        i = copies.pop(_copy_key(fact), None)
         if i is None:
-            held[fact_key(fact)] = len(target.facts)
             target.facts.append(replace(fact, embedding=None))
             continue
-        twin = target.facts[i]
-        merged = replace(
-            twin,
-            added=min(twin.added, fact.added),
-            last_seen=max(filter(None, [twin.last_seen, fact.last_seen]), default=None),
-            hit_count=max(twin.hit_count, fact.hit_count),
-            expires=longer_lifetime(twin.expires, fact.expires),
-            superseded_at=twin.superseded_at or fact.superseded_at,
-            superseded_by=twin.superseded_by or fact.superseded_by,
-            embedding=None,
-        )
-        target.facts[i] = merged
-        held.pop(fact_key(twin), None)
-        held[fact_key(merged)] = i
-        if not merged.is_current:
-            live.pop((merged.text, merged.valid_from), None)
+        _absorb(target, i, fact)
+        used.add(i)
+
+
+def _absorb(target: Entity, i: int, fact: Fact) -> None:
+    twin = target.facts[i]
+    target.facts[i] = replace(
+        twin,
+        added=min(twin.added, fact.added),
+        last_seen=max(filter(None, [twin.last_seen, fact.last_seen]), default=None),
+        hit_count=max(twin.hit_count, fact.hit_count),
+        expires=longer_lifetime(twin.expires, fact.expires),
+        superseded_at=twin.superseded_at or fact.superseded_at,
+        superseded_by=twin.superseded_by or fact.superseded_by,
+        embedding=None,
+    )
 
 
 def _current(entity: Entity, without: set | frozenset = frozenset()) -> int:
