@@ -126,27 +126,41 @@ line if you use more than `shared`.
 
 ### Running it nightly with Claude Code
 
-From your KIPP checkout (the examples assume `~/kipp`):
+[`contrib/kipp-extract.sh`](../contrib/kipp-extract.sh) runs the prompt with
+`claude -p` and limits the agent to the KIPP tools:
+
+- `--strict-mcp-config` with its own `--mcp-config`, so none of the other MCP
+  servers in your Claude Code config are loaded;
+- `--tools ""`, so there's no shell, file or web access;
+- `--allowedTools mcp__kipp`, so the KIPP calls run without prompting.
+
+That matters because the agent reads raw event text, and an event can contain
+anything your agent captured, including text from web pages. The script
+resolves `kipp` and `claude` to absolute paths itself, so it also works under
+cron's minimal `PATH`. Set `KIPP_BIN` or `CLAUDE_BIN` if they aren't in
+`~/.local/bin`, `/usr/local/bin` or `/opt/homebrew/bin`.
+
+Run it once by hand from your KIPP checkout (the examples assume `~/kipp`) and
+read the summary:
 
 ```bash
-claude -p "$(cat ~/kipp/contrib/extraction-prompt.md)" \
-  --allowedTools mcp__kipp
+~/kipp/contrib/kipp-extract.sh
 ```
 
-`--allowedTools mcp__kipp` lets it use the KIPP tools without prompting, and
-nothing else. Run it once by hand to check the summary, then schedule it, for
-example with cron. Create the log directory first with
-`mkdir -p ~/.local/state`, or the redirect fails and the job never starts.
+Then schedule it, for example with cron:
+
+```bash
+mkdir -p ~/.local/state      # for the log; cron won't create it
+crontab -e
+```
 
 ```cron
 # m h dom mon dow
-30 3 * * * cd "$HOME" && /full/path/to/claude -p "$(cat $HOME/kipp/contrib/extraction-prompt.md)" --allowedTools mcp__kipp >> "$HOME/.local/state/kipp-extract.log" 2>&1
+30 3 * * * $HOME/kipp/contrib/kipp-extract.sh >> $HOME/.local/state/kipp-extract.log 2>&1
 ```
 
-cron runs with a minimal `PATH`, so use the full path from `command -v claude`.
-The server name `kipp` must match what you registered in
-[mcp-clients.md](mcp-clients.md). Any other agent runner that can call MCP
-tools works the same way: give it the prompt and the KIPP tools.
+Any other agent runner that can call MCP tools works the same way: give it the
+prompt and only the KIPP tools.
 
 ### If you skip it
 
