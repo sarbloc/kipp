@@ -37,7 +37,7 @@ from kipp.merge import build_vector_text
 from kipp.models import Entity, Fact
 
 FACT_FETCH = 50      # entities fetched per fact search (grouped, so many-fact entities can't crowd others out)
-FACTS_PER_ENTITY = 10  # matched facts kept per entity, for ordering its facts
+FACTS_PER_ENTITY = 30  # matched facts kept per entity, for ordering its facts (covers a search hit's word budget)
 SYNC_ATTEMPTS = 5
 _UPSERT_CHUNK = 100
 
