@@ -1,4 +1,4 @@
-"""Tests for the `memory extract` CLI command.
+"""Tests for the `kipp extract` CLI command.
 
 Focus is the burn-fix (issue #14): the CLI path must mark extracted ONLY the
 events that enriched an existing entity, leaving fully-unmatched events as

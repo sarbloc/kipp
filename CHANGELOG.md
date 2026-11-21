@@ -44,8 +44,8 @@ The first release on PyPI, as `kipp-memory`. It installs the `kipp` command.
   move, event, extract, listing and resolving unextracted events, embed, and
   stats, each taking a domain.
 - On the command line, `store`, `get`, `delete`, `list`, `search`, `event`,
-  `extract`, `split-plan` and `dismiss` take `--domain`. `memory` is an alias for
-  `kipp`.
+  `extract`, `split-plan` and `dismiss` take `--domain`. The pre-rename
+  `memory` command is not installed: call `kipp`.
 - `kipp eval` scores recall (hit@k and MRR) against a JSONL file of questions
   with known answers.
 

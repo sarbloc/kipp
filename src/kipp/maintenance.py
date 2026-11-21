@@ -1,6 +1,6 @@
 """Garbage collection and compaction, per domain.
 
-Shared by the ``memory expire`` / ``memory compact`` CLI commands. Each helper
+Shared by the ``kipp expire`` / ``kipp compact`` CLI commands. Each helper
 works on exactly one domain so callers choose the blast radius explicitly; the
 CLI loops over ``DOMAINS`` for ``--domain all`` (issue #32).
 """

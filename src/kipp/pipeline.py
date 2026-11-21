@@ -2,7 +2,7 @@
 into existing entities, in batches. Tagged events route by id; untagged ones
 are cosine-matched only with ``match_untagged`` (issue #33).
 
-This is the single orchestration path shared by the ``memory extract`` CLI
+This is the single orchestration path shared by the ``kipp extract`` CLI
 command and the ``memory_extract`` MCP tool. Keeping both callers on one helper
 is deliberate: the CLI previously drifted from the MCP path and silently
 re-introduced the burn-all bug (issue #14). One code path, one behaviour.

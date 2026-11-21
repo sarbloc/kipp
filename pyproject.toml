@@ -39,7 +39,6 @@ Changelog = "https://github.com/sarbloc/kipp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kipp = "kipp.cli:main"
-memory = "kipp.cli:main"  # pre-rename alias; Endurance and OpenClaw call it
 
 [tool.setuptools.packages.find]
 where = ["src"]
