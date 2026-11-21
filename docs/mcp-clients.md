@@ -129,7 +129,9 @@ Any stdio MCP client can launch it:
 Ask your agent to "store a fact that my favourite editor is Helix, then search
 memory for my editor". You should see a `memory_store` call followed by a
 `memory_search` that returns `preference:editor` (or whichever id the agent
-picked). From a shell, `kipp list` shows the same entity, because the CLI and
-the MCP server share the `shared` domain.
+picked). From a shell, `kipp list` shows the same entity: the CLI and the MCP
+server both default to the `shared` domain. If the agent passed a `domain`,
+add the same `--domain` to `kipp list`, `get`, `search`, `store`, `delete` or
+`event`.
 
 Next: [teach your agent when to use these tools](agent-guide.md).

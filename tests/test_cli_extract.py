@@ -12,13 +12,10 @@ actual command orchestration is exercised end to end.
 
 import uuid
 
-import pytest
 from click.testing import CliRunner
 
-import kipp.cli as cli_mod
 from kipp.cli import main
 from kipp.client import (
-    ALL_COLLECTIONS,
     get_unextracted_events,
     store_event,
     upsert_entity,
@@ -28,29 +25,6 @@ from kipp.models import Entity, Fact
 
 TODAY = "2026-03-10"
 NOW_ISO = "2026-03-10T12:00:00"
-
-
-@pytest.fixture
-def cli_env(embedder, monkeypatch):
-    """In-memory Qdrant + mock embedder wired into the cli module.
-
-    Collections are created at the mock embedder's dimension (not via
-    ensure_collections, which hardcodes the 384-dim real model size).
-    """
-    from qdrant_client import QdrantClient
-    from qdrant_client.models import Distance, VectorParams
-
-    dim = len(embedder.embed("dimension probe"))
-    client = QdrantClient(":memory:")
-    for name in ALL_COLLECTIONS:
-        client.create_collection(
-            collection_name=name,
-            vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
-        )
-
-    monkeypatch.setattr(cli_mod, "get_client", lambda *a, **k: client)
-    monkeypatch.setattr(cli_mod, "_get_embedder", lambda *a, **k: embedder)
-    return client
 
 
 def _seed_event(client, embedder, text, *, domain="shared", timestamp=NOW_ISO):
