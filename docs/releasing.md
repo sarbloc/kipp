@@ -5,9 +5,12 @@ Pushing a `v*` tag runs [`release.yml`](../.github/workflows/release.yml). The
 workflow:
 
 1. checks that the tag matches the version in `pyproject.toml`;
-2. builds the sdist and wheel, then runs `twine check --strict`;
-3. installs the wheel and runs the test suite against it;
-4. publishes to PyPI with Trusted Publishing.
+2. builds the sdist and wheel and uploads them as a run artifact, before any
+   other dependency is installed;
+3. in a separate job, runs `twine check --strict` on that artifact, installs
+   the wheel and runs the test suite against it;
+4. publishes the build job's artifact, fetched by its id, to PyPI with
+   Trusted Publishing.
 
 No PyPI token is stored anywhere.
 
@@ -26,7 +29,7 @@ No PyPI token is stored anywhere.
    ```
 
 5. Watch the run: `gh run watch`. The publish job runs only after the build
-   job passes.
+   and test jobs pass.
 6. Create the GitHub release from the tag, using the changelog entry:
    `gh release create vX.Y.Z --notes-file <(sed -n '/^## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | sed '1d;$d')`
 
