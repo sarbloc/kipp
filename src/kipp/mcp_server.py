@@ -1,6 +1,6 @@
 """MCP stdio server exposing KIPP operations as tools.
 
-Started by `memory mcp`. Talks the Model Context Protocol over stdio so an
+Started by `kipp mcp`. Talks the Model Context Protocol over stdio so an
 MCP client (e.g. Endurance, Claude Code, etc.) can invoke memory operations
 without shelling out to the CLI.
 
@@ -499,7 +499,7 @@ def memory_stats() -> dict[str, dict[str, Any]]:
 
 
 def run() -> None:
-    """Entry point used by `memory mcp`."""
+    """Entry point used by `kipp mcp`."""
     mcp.run()
 
 

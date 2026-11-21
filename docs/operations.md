@@ -266,8 +266,8 @@ On macOS, run the same two commands from `launchd` or `cron`.
 ### Moving from entity-memory units
 
 Older installs have `entity-memory-expire` and `entity-memory-backup` units.
-They keep working, because they call `memory`, which is now an alias for
-`kipp`. To switch to the new names:
+They call `memory`, which no longer exists, so they fail until you replace
+them. Remove them:
 
 ```bash
 systemctl --user disable --now entity-memory-expire.timer entity-memory-backup.timer

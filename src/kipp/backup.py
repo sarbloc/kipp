@@ -1,6 +1,6 @@
 """Snapshot every Qdrant collection to local disk (#38).
 
-``memory export`` covers only the shared domain's entities, so it is not a
+``kipp export`` covers only the shared domain's entities, so it is not a
 backup. This takes a native Qdrant snapshot of EVERY collection, downloads it,
 verifies it against the checksum Qdrant reports, and deletes the server-side
 copy (``/qdrant/snapshots`` is not on the data volume, so leftovers pile up in

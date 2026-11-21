@@ -1,4 +1,4 @@
-"""Tests for the `memory dismiss` CLI command (bulk event dismissal).
+"""Tests for the `kipp dismiss` CLI command (bulk event dismissal).
 
 Uses a fake Qdrant client (same spirit as MockEmbedder elsewhere) so the
 command's client-side logic — keep-exclusion, dry-run vs apply, batching — is

@@ -202,7 +202,7 @@ def test_expired_duplicate_does_not_absorb(client, emb):
 
     facts = get_entity(client, "person:alice", domain="dev").facts
     # The moved fact lands as its own permanent fact; the expired one is left
-    # for `memory expire` instead of swallowing it.
+    # for `kipp expire` instead of swallowing it.
     assert sorted((f.expires or "") for f in facts) == ["", "2026-11-15"]
 
 

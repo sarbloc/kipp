@@ -119,11 +119,11 @@ treats it as a new app:
 
 ```bash
 pipx uninstall entity-memory
-pipx install -e .            # provides `kipp` and the `memory` alias
+pipx install -e .            # provides the `kipp` command
 ```
 
-`scripts/install.sh` does this for you. The `memory` command, the old config
-paths and `ENTITY_MEMORY_CONFIG` all still work. Qdrant data and collection
+`scripts/install.sh` does this for you. The old `memory` command is gone: call
+`kipp` instead. The old config paths and `ENTITY_MEMORY_CONFIG` still work. Qdrant data and collection
 names are unchanged. To move installed systemd timers to the new unit names,
 see [`docs/operations.md`](https://github.com/sarbloc/kipp/blob/main/docs/operations.md#systemd-timers).
 

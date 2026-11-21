@@ -23,7 +23,7 @@ The full spec is in `MEMORY-SYSTEM-SPEC.md`.
 pip install -e .
 
 # Run CLI
-kipp <command>      # `memory` is a pre-rename alias; Endurance's MEMORY_BIN still uses it
+kipp <command>
 
 # Start Qdrant
 docker compose up -d
@@ -72,15 +72,15 @@ The four kinds:
 
 | Tool | Maps to |
 |------|---------|
-| `memory_store` | `memory store` |
-| `memory_get` | `memory get` |
-| `memory_list` | `memory list` |
-| `memory_search` | `memory search` |
-| `memory_event` | `memory event` (also accepts `run_id`/`session_id`/`profile`/`trigger_source` for provenance) |
-| `memory_extract` | `memory extract` |
+| `memory_store` | `kipp store` |
+| `memory_get` | `kipp get` |
+| `memory_list` | `kipp list` |
+| `memory_search` | `kipp search` |
+| `memory_event` | `kipp event` (also accepts `run_id`/`session_id`/`profile`/`trigger_source` for provenance) |
+| `memory_extract` | `kipp extract` |
 | `memory_move` | `split.move_facts` (what `kipp split-apply` runs per group) |
 | `memory_embed` | direct embedder access (lets MCP clients reuse the same MiniLM model) |
-| `memory_stats` | `memory stats` |
+| `memory_stats` | `kipp stats` |
 
 CLI commands default to `domain="shared"`, so OpenClaw keeps working without modification. `store`, `get`, `delete`, `list`, `search`, `event`, `extract`, `split-plan` and `dismiss` take `--domain`; `expire`, `compact`, `reindex` and `oversized` also accept `all`. `export`/`import` are shared-only.
 
