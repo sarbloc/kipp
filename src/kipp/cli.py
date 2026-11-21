@@ -51,6 +51,12 @@ def main():
     pass
 
 
+_domain_option = click.option(
+    "--domain", type=click.Choice(DOMAINS), default="shared", show_default=True,
+    help="Domain to operate on.",
+)
+
+
 @main.command()
 def init():
     """Create collections and indexes if they don't exist."""
@@ -91,9 +97,10 @@ def stats():
     "--parent", default=None,
     help="Full id of the entity this one was split from, e.g. person:alice.",
 )
+@_domain_option
 def store(
     entity_type: str, entity_id: str, content: str, supersedes: str | None,
-    valid_from: str | None, parent: str | None,
+    valid_from: str | None, parent: str | None, domain: str,
 ):
     """Directly upsert an entity with a fact."""
     client = get_client()
@@ -115,11 +122,11 @@ def store(
         from kipp.split import check_parent
 
         try:
-            check_parent(client, full_id, parent, domain="shared")
+            check_parent(client, full_id, parent, domain=domain)
         except ValueError as exc:
             raise click.ClickException(str(exc))
 
-    existing = get_entity(client, full_id)
+    existing = get_entity(client, full_id, domain=domain)
     if existing is None:
         existing = Entity(id=full_id, type=entity_type)
     if parent is not None:
@@ -138,7 +145,7 @@ def store(
     new_fact = Fact(text=content, added=today, source="cli:store", valid_from=valid_from)
     merged = merge(existing, [new_fact], embedder, now=now)
 
-    write_entity(client, merged, embedder)
+    write_entity(client, merged, embedder, domain=domain)
 
     click.echo(f"Stored: {full_id} ({current_fact_count(merged)} current facts)")
     if supersedes:
@@ -156,7 +163,7 @@ def store(
 
 @main.command()
 @click.argument("entity_id")
-@click.option("--domain", type=click.Choice(DOMAINS), default="shared", show_default=True)
+@_domain_option
 def get(entity_id: str, domain: str):
     """Retrieve a single entity's full detail."""
     client = get_client()
@@ -182,25 +189,27 @@ def get(entity_id: str, domain: str):
 @main.command()
 @click.argument("entity_id")
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
-def delete(entity_id: str, yes: bool):
+@_domain_option
+def delete(entity_id: str, yes: bool, domain: str):
     """Delete an entity permanently."""
     if not yes:
-        click.confirm(f"Delete {entity_id}?", abort=True)
+        click.confirm(f"Delete {entity_id} from {domain}?", abort=True)
 
     client = get_client()
-    if delete_entity(client, entity_id):
-        click.echo(f"Deleted: {entity_id}")
+    if delete_entity(client, entity_id, domain=domain):
+        click.echo(f"Deleted: {entity_id} ({domain})")
     else:
-        click.echo(f"Not found: {entity_id}")
+        click.echo(f"Not found in {domain}: {entity_id}")
         raise SystemExit(1)
 
 
 @main.command(name="list")
 @click.option("--type", "entity_type", default=None, help="Filter by type")
-def list_entities(entity_type: str | None):
+@_domain_option
+def list_entities(entity_type: str | None, domain: str):
     """List all known entities."""
     client = get_client()
-    entities = scroll_entities(client, entity_type)
+    entities = scroll_entities(client, entity_type, domain=domain)
     if not entities:
         click.echo("No entities found.")
         return
@@ -218,7 +227,8 @@ def list_entities(entity_type: str | None):
     help="ISO date: show each entity as it was then (superseded facts in effect "
          "at that date are shown). Default hides superseded facts.",
 )
-def search(query: str, entity_type: str | None, limit: int, as_of: str | None):
+@_domain_option
+def search(query: str, entity_type: str | None, limit: int, as_of: str | None, domain: str):
     """Semantic search across all entities."""
     from kipp.search import search_entities, format_results
 
@@ -226,6 +236,7 @@ def search(query: str, entity_type: str | None, limit: int, as_of: str | None):
     embedder = _get_embedder()
     results = search_entities(
         client, query, embedder, entity_type=entity_type, limit=limit, as_of=as_of,
+        domain=domain,
     )
     click.echo(format_results(results))
 
@@ -277,7 +288,8 @@ EVENT_TTL_DAYS = 30
 @click.argument("text")
 @click.option("--source", default="conversation", help="Event source: conversation|task|cron")
 @click.option("--agent", default="main", help="Agent name")
-def event(text: str, source: str, agent: str):
+@_domain_option
+def event(text: str, source: str, agent: str, domain: str):
     """Log a raw observation. No entity extraction happens immediately."""
     client = get_client()
     ensure_collections(client)
@@ -291,6 +303,7 @@ def event(text: str, source: str, agent: str):
     store_event(
         client, event_id=event_id, text=text, vector=vector,
         timestamp=now.isoformat(), source=source, agent=agent, expires=expires,
+        domain=domain,
     )
     click.echo(f"Logged event: {event_id[:8]}...")
 

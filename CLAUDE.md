@@ -82,7 +82,7 @@ The four kinds:
 | `memory_embed` | direct embedder access (lets MCP clients reuse the same MiniLM model) |
 | `memory_stats` | `memory stats` |
 
-The CLI surface is unchanged: existing commands default to `domain="shared"` via the new kwargs in `client.py`. OpenClaw keeps working without modification.
+CLI commands default to `domain="shared"`, so OpenClaw keeps working without modification. `store`, `get`, `delete`, `list`, `search`, `event`, `extract`, `split-plan` and `dismiss` take `--domain`; `expire`, `compact`, `reindex` and `oversized` also accept `all`. `export`/`import` are shared-only.
 
 ### Core algorithms (all deterministic, no LLM)
 
