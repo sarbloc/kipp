@@ -332,10 +332,11 @@ class TestMemoryStoreSupersession:
         assert "lives in Berlin" in texts
         assert "lives in London" not in texts
 
-    def test_search_trims_facts_per_hit(self, mcp_env):
+    def test_search_trims_long_facts_to_the_minimum(self, mcp_env):
         total = mcp_server.SEARCH_FACTS_PER_HIT + 5
         for i in range(total):
-            mcp_server.memory_store("project", "big", f"big project fact {i}", domain="shared")
+            text = f"big project fact {i} " + " ".join(f"w{i}x{j}" for j in range(46))
+            mcp_server.memory_store("project", "big", text, domain="shared")
         mcp_server.memory_store("project", "small", "small project fact", domain="shared")
 
         hits = {h["id"]: h for h in mcp_server.memory_search("project fact", domain="shared")}
@@ -345,6 +346,15 @@ class TestMemoryStoreSupersession:
         assert "facts_omitted" not in small
         # memory_get is the full record.
         assert len(mcp_server.memory_get("project:big", domain="shared")["facts"]) == total
+
+    def test_search_returns_more_short_facts_within_budget(self, mcp_env):
+        total = mcp_server.SEARCH_FACTS_PER_HIT + 5
+        for i in range(total):
+            mcp_server.memory_store("project", "big", f"big project fact {i}", domain="shared")
+
+        hits = {h["id"]: h for h in mcp_server.memory_search("project fact", domain="shared")}
+        assert len(hits["project:big"]["facts"]) == total
+        assert "facts_omitted" not in hits["project:big"]
 
     def test_search_as_of_returns_historical_state(self, mcp_env, embedder):
         client = mcp_env
@@ -425,3 +435,26 @@ class TestSearchTemporalLimit:
             "status report", domain="shared", as_of="2026-03-01", limit=1,
         )
         assert [h["id"] for h in hits] == ["project:alive"]
+
+
+class TestFactsWithinBudget:
+    def test_empty(self):
+        assert mcp_server._facts_within_budget([]) == 0
+
+    def test_long_facts_keep_the_minimum(self):
+        texts = ["word " * 100] * 15
+        assert mcp_server._facts_within_budget(texts) == mcp_server.SEARCH_FACTS_PER_HIT
+
+    def test_fewer_than_minimum_all_kept(self):
+        assert mcp_server._facts_within_budget(["word " * 200] * 3) == 3
+
+    def test_short_facts_fill_the_budget_exactly(self):
+        per = 20
+        budget_facts = mcp_server.SEARCH_FACT_WORDS // per
+        texts = [" ".join(["w"] * per)] * (budget_facts + 10)
+        assert mcp_server._facts_within_budget(texts) == budget_facts
+
+    def test_budget_counts_the_minimum_facts(self):
+        # 10 facts of 39 words leave 10 words of budget: one 10-word fact fits, the next doesn't.
+        texts = [" ".join(["w"] * 39)] * 10 + [" ".join(["w"] * 10)] * 3
+        assert mcp_server._facts_within_budget(texts) == 11

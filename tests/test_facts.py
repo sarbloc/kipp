@@ -17,6 +17,7 @@ from kipp.client import (
 )
 from kipp.embedder import MockEmbedder
 from kipp.facts import (
+    FACTS_PER_ENTITY,
     fact_point_id,
     fact_vector_text,
     prune_orphan_fact_points,
@@ -454,12 +455,12 @@ def test_ensure_fact_collection_tolerates_a_racing_creator(monkeypatch):
 
 
 def test_search_facts_is_not_crowded_out_by_many_fact_entities(client):
-    """Three entities with 20 perfect fact matches each must not use up the
-    window: a fourth entity's single good fact still comes back."""
+    """Three entities with more perfect fact matches than FACTS_PER_ENTITY must
+    not use up the window: a fourth entity's single good fact still comes back."""
     q = _unit(0)
     table = {}
     for i in range(3):
-        e = _entity(f"person:noisy{i}", tuple(f"Noisy {i} fact {j}." for j in range(20)))
+        e = _entity(f"person:noisy{i}", tuple(f"Noisy {i} fact {j}." for j in range(FACTS_PER_ENTITY + 10)))
         for f in e.facts:
             table[fact_vector_text(e, f)] = q
         write_entity(client, e, _Embedder(table))
@@ -472,7 +473,8 @@ def test_search_facts_is_not_crowded_out_by_many_fact_entities(client):
     hits = search_facts(client, q, domain="shared", limit=4)
 
     assert list(hits)[-1] == "person:quiet"
-    assert all(len(v) <= 10 for v in hits.values())
+    assert all(len(v) <= FACTS_PER_ENTITY for v in hits.values())
+    assert len(hits["person:noisy0"]) == FACTS_PER_ENTITY
 
 
 def test_keyword_fallback_score_survives_a_weaker_fact_hit(client):

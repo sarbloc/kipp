@@ -45,7 +45,11 @@ from kipp.search import format_results, search_entities
 from kipp.split import check_parent, move_facts
 
 EVENT_TTL_DAYS = 30
+# Facts per search hit: always the top SEARCH_FACTS_PER_HIT, then more while the
+# hit's facts stay within SEARCH_FACT_WORDS. Short atomic facts get a deeper
+# window; entities of long facts return the same 10 as before.
 SEARCH_FACTS_PER_HIT = 10
+SEARCH_FACT_WORDS = 400
 
 mcp = FastMCP("kipp")
 
@@ -237,9 +241,10 @@ def memory_search(
     """Semantic search across entities and decisions in a domain.
 
     Returns hits sorted by score, each with the entity payload and score.
-    Each hit carries at most 10 facts, best match for the query first; when
-    more exist, ``facts_omitted`` says how many were left out. Use
-    ``memory_get`` for every fact.
+    Each hit carries its best-matching facts first: at least 10, then more
+    while they total under about 400 words, so entities of short facts return
+    more of them. When more exist, ``facts_omitted`` says how many were left
+    out. Use ``memory_get`` for every fact.
 
     Superseded facts are hidden by default (issue #21). Pass ``as_of`` (an ISO
     date, e.g. "2025-06-01") to see each entity as it was on that date — facts
@@ -269,11 +274,24 @@ def _search_hit(score: float, entity: Entity) -> dict[str, Any]:
     already ranks facts best-first for the query, so the head is what matters.
     """
     hit = {"score": score, **_entity_to_dict(entity)}
-    omitted = len(hit["facts"]) - SEARCH_FACTS_PER_HIT
+    keep = _facts_within_budget([f["text"] for f in hit["facts"]])
+    omitted = len(hit["facts"]) - keep
     if omitted > 0:
-        hit["facts"] = hit["facts"][:SEARCH_FACTS_PER_HIT]
+        hit["facts"] = hit["facts"][:keep]
         hit["facts_omitted"] = omitted
     return hit
+
+
+def _facts_within_budget(texts: list[str]) -> int:
+    """How many leading facts a hit returns: the first SEARCH_FACTS_PER_HIT,
+    then each further fact while the running total stays within
+    SEARCH_FACT_WORDS."""
+    words = 0
+    for i, text in enumerate(texts):
+        words += len(text.split())
+        if i >= SEARCH_FACTS_PER_HIT and words > SEARCH_FACT_WORDS:
+            return i
+    return len(texts)
 
 
 @mcp.tool()
