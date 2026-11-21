@@ -217,7 +217,8 @@ This takes a native Qdrant snapshot of every collection in every domain and:
 - writes a `manifest.json` of point counts and digests;
 - deletes the server-side copy.
 
-The newest 3 backups are kept. `--keep N` changes that and `--dest DIR` moves
+The newest 7 backups are kept (a week of nightlies; manual runs share the
+slots). `--keep N` changes that and `--dest DIR` moves
 them. A failed run leaves nothing under a stamp name, so every stamp directory
 is a complete backup.
 
