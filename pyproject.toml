@@ -1,13 +1,27 @@
 [build-system]
-requires = ["setuptools>=68.0"]
+requires = ["setuptools>=77.0"]  # SPDX license string (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "kipp-memory"
 version = "0.1.0"
 description = "Entity-based persistent memory with semantic search for AI agents"
+readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sarbloc" }]
+keywords = ["memory", "ai-agents", "mcp", "qdrant", "embeddings", "semantic-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "qdrant-client>=1.12,<2",
     "sentence-transformers>=3.0",
@@ -16,6 +30,12 @@ dependencies = [
     "numpy>=1.24",
     "mcp>=1.0,<2",  # FastMCP import path removed in SDK 2.x (#29)
 ]
+
+[project.urls]
+Homepage = "https://github.com/sarbloc/kipp"
+Documentation = "https://github.com/sarbloc/kipp/tree/main/docs"
+Issues = "https://github.com/sarbloc/kipp/issues"
+Changelog = "https://github.com/sarbloc/kipp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kipp = "kipp.cli:main"

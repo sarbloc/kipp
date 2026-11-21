@@ -1,7 +1,7 @@
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/kipp-logo-dark.svg">
-    <img src="docs/brand/kipp-logo.svg" alt="KIPP" width="360">
+    <img src="https://raw.githubusercontent.com/sarbloc/kipp/main/docs/brand/kipp-logo.svg" alt="KIPP" width="360">
   </picture>
 </h1>
 
@@ -36,7 +36,7 @@ entities. Events that open with a `[type:id]` tag are filed automatically. The
 rest are reviewed by an agent, which creates the entities they describe. KIPP
 never invents entities on its own; that judgement stays with the agent.
 
-[`docs/agent-guide.md`](docs/agent-guide.md) has the prompt that teaches an
+[`docs/agent-guide.md`](https://github.com/sarbloc/kipp/blob/main/docs/agent-guide.md) has the prompt that teaches an
 agent this loop.
 
 ## Requirements
@@ -75,9 +75,9 @@ once it's cached nothing is downloaded again.
 
 Then:
 
-5. **Connect your AI client:** [`docs/mcp-clients.md`](docs/mcp-clients.md)
-6. **Teach your agent to use it:** [`docs/agent-guide.md`](docs/agent-guide.md)
-7. **Set up expiry and backups:** [`docs/operations.md`](docs/operations.md)
+5. **Connect your AI client:** [`docs/mcp-clients.md`](https://github.com/sarbloc/kipp/blob/main/docs/mcp-clients.md)
+6. **Teach your agent to use it:** [`docs/agent-guide.md`](https://github.com/sarbloc/kipp/blob/main/docs/agent-guide.md)
+7. **Set up expiry and backups:** [`docs/operations.md`](https://github.com/sarbloc/kipp/blob/main/docs/operations.md)
 
 `scripts/install.sh` does steps 1–3 in one go, reusing a Qdrant that is
 already running on port 6333.
@@ -86,10 +86,10 @@ already running on port 6333.
 
 | Page | What it covers |
 |------|----------------|
-| [mcp-clients.md](docs/mcp-clients.md) | Registering `kipp mcp` in Claude Code, Claude Desktop, Cursor, Codex CLI |
-| [agent-guide.md](docs/agent-guide.md) | System-prompt section, tools, tags, domains, the extraction loop |
-| [operations.md](docs/operations.md) | Configuration, expiry, compaction, backup and restore, systemd timers |
-| [MEMORY-SYSTEM-SPEC.md](MEMORY-SYSTEM-SPEC.md) | The original design spec |
+| [mcp-clients.md](https://github.com/sarbloc/kipp/blob/main/docs/mcp-clients.md) | Registering `kipp mcp` in Claude Code, Claude Desktop, Cursor, Codex CLI |
+| [agent-guide.md](https://github.com/sarbloc/kipp/blob/main/docs/agent-guide.md) | System-prompt section, tools, tags, domains, the extraction loop |
+| [operations.md](https://github.com/sarbloc/kipp/blob/main/docs/operations.md) | Configuration, expiry, compaction, backup and restore, systemd timers |
+| [MEMORY-SYSTEM-SPEC.md](https://github.com/sarbloc/kipp/blob/main/MEMORY-SYSTEM-SPEC.md) | The original design spec |
 
 ## Architecture
 
@@ -125,7 +125,7 @@ pipx install -e .            # provides `kipp` and the `memory` alias
 `scripts/install.sh` does this for you. The `memory` command, the old config
 paths and `ENTITY_MEMORY_CONFIG` all still work. Qdrant data and collection
 names are unchanged. To move installed systemd timers to the new unit names,
-see [`docs/operations.md`](docs/operations.md#systemd-timers).
+see [`docs/operations.md`](https://github.com/sarbloc/kipp/blob/main/docs/operations.md#systemd-timers).
 
 ## OpenClaw
 
