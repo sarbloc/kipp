@@ -11,11 +11,11 @@ ever-growing log. Local, deterministic, no LLM in the loop.
 - **One record per thing.** Knowledge lives in entities (`person:alice`,
   `project:billing`) whose facts are updated in place. Storage grows with the
   number of distinct things your agent knows about, not with time.
-- **Bounded.** Compaction trims each entity to its 20 best current facts,
-  ranked by how often, how recently and how permanently they were asserted.
+- **Found by any fact.** Every fact is indexed on its own, so a large entity
+  still comes up for the one fact that matches. There is no size cap: past 30
+  facts, KIPP suggests splitting an entity into topic entities.
 - **History kept.** A replaced fact is marked superseded, not deleted, so you
-  can ask what was true on a past date. Compaction drops superseded facts
-  first, so an entity that hits the cap loses its oldest history.
+  can ask what was true on a past date.
 - **Local and deterministic.** Qdrant in Docker plus a small local embedding
   model. Merge, dedup, compaction and expiry are plain maths: no API calls, no
   LLM, same input gives the same result.
@@ -82,6 +82,18 @@ Then:
 `scripts/install.sh` does steps 1–3 in one go, reusing a Qdrant that is
 already running on port 6333.
 
+### Without cloning
+
+KIPP is on PyPI as [`kipp-memory`](https://pypi.org/project/kipp-memory/).
+Start Qdrant yourself, then install and initialise:
+
+```bash
+docker run -d --name kipp-qdrant --restart unless-stopped \
+  -p 127.0.0.1:6333:6333 -v kipp_qdrant:/qdrant/storage qdrant/qdrant:v1.20.0
+pipx install kipp-memory
+kipp init
+```
+
 ## Docs
 
 | Page | What it covers |
@@ -89,15 +101,21 @@ already running on port 6333.
 | [mcp-clients.md](https://github.com/sarbloc/kipp/blob/main/docs/mcp-clients.md) | Registering `kipp mcp` in Claude Code, Claude Desktop, Cursor, Codex CLI |
 | [agent-guide.md](https://github.com/sarbloc/kipp/blob/main/docs/agent-guide.md) | System-prompt section, tools, tags, domains, the extraction loop |
 | [operations.md](https://github.com/sarbloc/kipp/blob/main/docs/operations.md) | Configuration, expiry, compaction, backup and restore, systemd timers |
+| [CHANGELOG.md](https://github.com/sarbloc/kipp/blob/main/CHANGELOG.md) | What changed in each release |
 | [MEMORY-SYSTEM-SPEC.md](https://github.com/sarbloc/kipp/blob/main/MEMORY-SYSTEM-SPEC.md) | The original design spec |
 
 ## Architecture
 
-- **Qdrant** stores nine collections: three **domains** (`shared`, `dev`,
-  `personal`) × three **kinds**:
+- **Qdrant** stores twelve collections: three **domains** (`shared`, `dev`,
+  `personal`) × four **kinds**:
   - `entities`: long-term knowledge, upserted in place;
   - `events`: raw observations, expire after 30 days;
-  - `decisions`: like entities, but never expire.
+  - `decisions`: like entities, but never expire;
+  - `facts`: the search index, one point per fact, rebuilt from entities by
+    `kipp reindex`.
+- **Search** scores each entity by the better of its own vector and its best
+  matching fact, fused with a keyword match. Each hit returns its best facts
+  up to a word budget.
 - **all-MiniLM-L6-v2** embeds text locally (384 dimensions).
 - **Merge:** a new fact within cosine 0.9 of an existing one is a duplicate. The
   existing fact's hit count goes up and the longer wording wins. Anything else
@@ -105,12 +123,14 @@ already running on port 6333.
 - **No fact cap:** every fact is searched on its own, so entities can grow.
   Past 30 current facts, writes return an `oversized` note suggesting a split
   into topic entities (`kipp oversized` lists them; `kipp split-plan` and
-  `kipp split-apply` do the split, and children point at their `parent`). `kipp compact` exists to
-  trim to the top 20 by frequency × recency × permanence, but it deletes
-  facts and nothing runs it.
+  `kipp split-apply` do the split, and children point at their `parent`).
+  `kipp compact` can trim to the top 20 by frequency × recency × permanence,
+  but it deletes facts and nothing runs it.
 
 The `shared` domain uses the bare collection names (`entities`, `events`,
-`decisions`); the others are prefixed (`dev_entities`, ...).
+`decisions`, `facts`); the others are prefixed (`dev_entities`, ...).
+MCP tools and most CLI commands take a domain, defaulting to `shared`;
+`export` and `import` cover `shared` only.
 
 ## Upgrading from entity-memory
 
@@ -123,8 +143,8 @@ pipx install -e .            # provides the `kipp` command
 ```
 
 `scripts/install.sh` does this for you. The old `memory` command is gone: call
-`kipp` instead. The old config paths and `ENTITY_MEMORY_CONFIG` still work. Qdrant data and collection
-names are unchanged. To move installed systemd timers to the new unit names,
+`kipp` instead. The old config paths and `ENTITY_MEMORY_CONFIG` still work.
+Qdrant data and collection names are unchanged. To move installed systemd timers to the new unit names,
 see [`docs/operations.md`](https://github.com/sarbloc/kipp/blob/main/docs/operations.md#systemd-timers).
 
 ## OpenClaw
@@ -136,6 +156,5 @@ see [`docs/operations.md`](https://github.com/sarbloc/kipp/blob/main/docs/operat
 
 ```bash
 pip install -e .
-docker compose up -d --wait   # the integration tests need Qdrant
-python3 -m pytest -q
+python3 -m pytest -q          # in-memory Qdrant and a mock embedder: no services needed
 ```

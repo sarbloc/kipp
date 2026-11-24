@@ -34,7 +34,7 @@ kipp init
 # Run tests
 pytest
 pytest tests/test_merge.py           # unit tests (no Qdrant needed)
-pytest tests/test_search.py          # integration tests (Qdrant must be running)
+pytest tests/test_search.py          # search tests (in-memory Qdrant)
 pytest tests/test_merge.py::test_name  # single test
 ```
 
@@ -103,5 +103,5 @@ HALF_LIFE_DAYS = 30
 ## Testing
 
 - Unit tests use `MockEmbedder` (deterministic hash-based vectors, 48 dims). Tests merge mechanics, not semantic quality.
-- Integration tests require a running Qdrant container. Use `conftest.py` fixtures for temporary collections.
+- Every test runs against an in-memory Qdrant (`QdrantClient(":memory:")`, `conftest.py` fixtures); no container needed.
 - Config lives at `~/.config/kipp/config.json` (falls back to `~/.config/entity-memory/config.json`, then `~/.openclaw/memory.json`), or env vars (`QDRANT_URL`, `KIPP_CONFIG`). Qdrant API key via `QDRANT_API_KEY` env var.
