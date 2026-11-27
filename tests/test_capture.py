@@ -489,6 +489,20 @@ def test_stripping_many_unclosed_tags_is_linear():
     assert _fast(strip_injected, "<context> " * 50000 + "</interrupt>" * 50000)
 
 
+def test_stripping_many_incomplete_tags_is_linear():
+    assert _fast(strip_injected, "<context " * 50000)
+
+
+def test_hook_exits_0_when_the_state_dir_is_a_symlink(tmp_path, monkeypatch, capsys):
+    real = tmp_path / "real"
+    (real / "kipp").mkdir(parents=True)
+    (real / "kipp" / "capture").symlink_to(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(real))
+
+    assert run_hook(monkeypatch, json.dumps({"session_id": "s1", "transcript_path": "x"})) == 0
+    assert "symlink" in capsys.readouterr().err
+
+
 def test_redacting_many_unterminated_pem_headers_is_linear():
     assert _fast(redact, "-----BEGIN PRIVATE KEY----- " * 50000)
 

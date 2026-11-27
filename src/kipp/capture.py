@@ -131,7 +131,9 @@ def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS) -> str:
     names = "|".join(re.escape(t) for t in tags)
     if not names:
         return text.strip()
-    token = re.compile(rf"<(/?)({names})(?:\s[^>]*)?>")
+    # Attributes are capped so an unterminated `<tag ` can't make each match
+    # rescan the rest of the text.
+    token = re.compile(rf"<(/?)({names})(?:\s[^<>]{{0,200}})?>")
     drops: list[tuple[int, int]] = []
     # Open blocks: (tag, start, closed regions inside it). A region is only
     # final once its outermost block closes, or when its parent never does.
@@ -587,7 +589,7 @@ def _setup_logging(hook: bool) -> None:
         # falling back to stderr if the state directory isn't writable.
         try:
             handler = logging.FileHandler(ensure_state_dir() / "capture.log")
-        except OSError as exc:
+        except (OSError, ValueError) as exc:  # unwritable, or a refused symlink
             print(f"kipp-capture: can't open the capture log ({exc}); logging to stderr",
                   file=sys.stderr)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
