@@ -250,7 +250,7 @@ def read_new_records(path: Path, offset: int) -> tuple[list[tuple[int, dict]], i
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError:
+        except (ValueError, RecursionError):  # bad JSON, bad UTF-8, absurd nesting
             log.warning("skipping malformed transcript line at byte %d in %s", start, path)
             continue
         if isinstance(rec, dict):

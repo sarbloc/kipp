@@ -342,6 +342,14 @@ def test_record_with_non_string_uuid_does_not_stall_capture(tmp_path):
     assert capture_transcript(t, session_id="s1", config=CFG) == 1
 
 
+def test_undecodable_and_broken_lines_are_skipped(tmp_path):
+    t = tmp_path / "s1.jsonl"
+    t.write_bytes(b'{"type": "user", "text": "\xff\xfe"}\n{not json\n' + b"[" * 100000 + b"\n"
+                  + (json.dumps(user("u-01", "Good.")) + "\n").encode())
+
+    assert capture_transcript(t, session_id="s1", config=CFG) == 1
+
+
 def test_no_new_dialogue_spools_nothing(tmp_path):
     t = tmp_path / "s1.jsonl"
     write(t, [{"type": "ai-title", "title": "x"}])
