@@ -237,12 +237,6 @@ def _str(value) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _is_tool_result(content) -> bool:
-    return isinstance(content, list) and any(
-        isinstance(b, dict) and b.get("type") == "tool_result" for b in content
-    )
-
-
 def claude_code_turns(
     records: Iterable[dict], *, session_id: str, cwd: str = "",
     tags: Iterable[str] = DEFAULT_STRIP_TAGS,
@@ -281,8 +275,8 @@ def claude_code_turns(
             continue
         content = message.get("content")
         if kind == "user":
-            if _is_tool_result(content):
-                continue
+            # Only text blocks count, so a tool-result message opens no turn,
+            # but prose sent alongside tool results still does.
             texts = [strip_injected(t, tags) for t in _text_blocks(content)]
             texts = [t for t in texts if t] or _attachment_markers(content)
             if not texts:
@@ -497,7 +491,9 @@ def _append_to_spool(data: str) -> None:
                             size - keep, spool_path())
                 f.truncate(keep)
                 f.seek(keep)
-        f.write(data.encode("utf-8"))
+        # "replace": a lone surrogate from a JSON escape can't encode as UTF-8,
+        # and one bad character mustn't block every later capture.
+        f.write(data.encode("utf-8", "replace"))
         f.flush()
         os.fsync(f.fileno())
 

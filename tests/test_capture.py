@@ -135,6 +135,19 @@ def test_injection_only_user_message_does_not_open_a_turn():
     assert [(t.user, t.assistant) for t in out] == [("Ask.", "Answer.\n\nMore answer.")]
 
 
+def test_prose_beside_tool_results_opens_a_turn():
+    out = turns([
+        user("u-01", "Run it."),
+        assistant("a-01", text("Running."), tool_use()),
+        user("u-02", [*tool_result("ok"), text("Actually, stop after this.")]),
+        assistant("a-02", text("Stopping.")),
+    ])
+
+    assert [(t.user, t.assistant) for t in out] == [
+        ("Run it.", "Running."), ("Actually, stop after this.", "Stopping."),
+    ]
+
+
 def test_image_only_message_is_its_own_turn():
     out = turns([
         user("u-01", "Ask."),
@@ -384,6 +397,15 @@ def test_partial_spool_record_is_cut_before_appending(tmp_path):
     capture_transcript(t, session_id="s1", config=CFG)
 
     assert [r.get("text") for r in spooled()] == ["complete", "User: Ask."]
+
+
+def test_lone_surrogate_does_not_block_capture(tmp_path):
+    t = tmp_path / "s1.jsonl"
+    t.write_text('{"type": "user", "uuid": "u-01", "message": {"content": "bad \\ud800 char"}}\n'
+                 + json.dumps(user("u-02", "Fine.")) + "\n")
+
+    assert capture_transcript(t, session_id="s1", config=CFG) == 2
+    assert [r["text"] for r in spooled()] == ["User: bad ? char", "User: Fine."]
 
 
 def test_no_new_dialogue_spools_nothing(tmp_path):
