@@ -623,24 +623,37 @@ def reindex(domain: str):
 
 @main.command(name="export")
 @click.option("--format", "fmt", type=click.Choice(["json", "md"]), default="json", help="Output format")
-def export_cmd(fmt: str):
-    """Export all entities for backup or inspection."""
+@_maintenance_domain
+def export_cmd(fmt: str, domain: str):
+    """Export entities and decisions for backup or inspection.
+
+    JSON records carry their domain, so `kipp import` restores each one to the
+    domain it came from.
+    """
     import sys
     from kipp.export import export_json, export_markdown
 
     client = get_client()
-    entities = scroll_entities(client)
+    by_domain = {d: scroll_entities(client, domain=d) for d in _resolve_domains(domain)}
 
     if fmt == "json":
-        export_json(entities, sys.stdout)
+        export_json(by_domain, sys.stdout)
     else:
-        export_markdown(entities, sys.stdout)
+        export_markdown(by_domain, sys.stdout)
 
 
 @main.command(name="import")
 @click.argument("file", type=click.Path(exists=True))
-def import_cmd(file: str):
-    """Import entities from a JSON export. Runs merge logic (won't duplicate)."""
+@click.option(
+    "--domain", type=click.Choice([*DOMAINS, "all"]), default="all", show_default=True,
+    help="Import only records from this domain, or 'all'.",
+)
+def import_cmd(file: str, domain: str):
+    """Import entities from a JSON export. Runs merge logic (won't duplicate).
+
+    Each record goes back to the domain it was exported from; records without
+    one (exports from before --domain existed) go to shared.
+    """
     import json as json_mod
     from kipp.export import import_json, reject_future_dated_facts
 
@@ -652,25 +665,32 @@ def import_cmd(file: str):
     with open(file) as f:
         data = json_mod.load(f)
 
-    imported = import_json(data)
-    # Validate the whole backup before writing anything, so a bad fact aborts the
-    # import atomically rather than half-applying it (issue #24).
+    # Validate the whole backup before writing anything, so a bad domain or fact
+    # aborts the import atomically rather than half-applying it (issues #24, #65).
     try:
-        reject_future_dated_facts(imported, now.date().isoformat())
+        records = import_json(data)
+        reject_future_dated_facts([e for _, e in records], now.date().isoformat())
     except ValueError as exc:
         raise click.ClickException(str(exc))
 
-    for entity in imported:
-        existing = get_entity(client, entity.id)
+    wanted = set(_resolve_domains(domain))
+    selected = [(d, e) for d, e in records if d in wanted]
+    for d, entity in selected:
+        existing = get_entity(client, entity.id, domain=d)
         if existing is None:
             existing = Entity(id=entity.id, type=entity.type)
         if existing.parent is None:
             existing.parent = entity.parent
 
         merged = merge(existing, entity.facts, embedder, now=now)
-        write_entity(client, merged, embedder)
+        write_entity(client, merged, embedder, domain=d)
 
-    click.echo(f"Imported {len(imported)} entities.")
+    counts = Counter(d for d, _ in selected)
+    summary = ", ".join(f"{d}: {counts[d]}" for d in DOMAINS if counts[d])
+    click.echo(f"Imported {len(selected)} entities" + (f" ({summary})." if summary else "."))
+    skipped = len(records) - len(selected)
+    if skipped:
+        click.echo(f"Skipped {skipped} from other domains.")
 
 
 @main.command()

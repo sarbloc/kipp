@@ -82,7 +82,7 @@ The four kinds:
 | `memory_embed` | direct embedder access (lets MCP clients reuse the same MiniLM model) |
 | `memory_stats` | `kipp stats` |
 
-CLI commands default to `domain="shared"`, so OpenClaw keeps working without modification. `store`, `get`, `delete`, `list`, `search`, `event`, `extract`, `split-plan` and `dismiss` take `--domain`; `expire`, `compact`, `reindex` and `oversized` also accept `all`. `export`/`import` are shared-only.
+CLI commands default to `domain="shared"`, so OpenClaw keeps working without modification. `store`, `get`, `delete`, `list`, `search`, `event`, `extract`, `split-plan` and `dismiss` take `--domain`; `expire`, `compact`, `reindex`, `oversized` and `export` also accept `all`. `import` restores each record to its exported `domain` (records without one go to `shared`); its `--domain` filters, default `all`.
 
 ### Core algorithms (all deterministic, no LLM)
 

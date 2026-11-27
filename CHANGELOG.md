@@ -6,6 +6,14 @@ All notable changes to KIPP are recorded here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `kipp export --domain shared|dev|personal|all` (default `shared`). JSON
+  records now carry a `domain` field, and markdown groups by domain when
+  exporting several (#65).
+- `kipp import` restores each record to its domain. Records without one
+  (older exports) go to `shared`. `--domain` imports only one domain, and an
+  unknown domain aborts the import before anything is written (#65).
+
 ## [0.1.0]
 
 The first release on PyPI, as `kipp-memory`. It installs the `kipp` command.

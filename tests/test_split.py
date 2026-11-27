@@ -641,11 +641,11 @@ def test_parent_survives_point_and_export_round_trips(client, emb):
     child = get_entity(client, "person:alice-x", domain="personal")
     assert child.parent == "person:alice"
     out = io.StringIO()
-    export_json([child, get_entity(client, "person:alice", domain="personal")], out)
+    export_json({"personal": [child, get_entity(client, "person:alice", domain="personal")]}, out)
     restored = import_json(json.loads(out.getvalue()))
-    assert [e.parent for e in restored] == ["person:alice", None]
+    assert [(d, e.parent) for d, e in restored] == [("personal", "person:alice"), ("personal", None)]
     # Pre-parent backups import with no parent.
-    assert import_json([{"id": "person:z", "type": "person", "facts": []}])[0].parent is None
+    assert import_json([{"id": "person:z", "type": "person", "facts": []}])[0][1].parent is None
 
 
 def test_list_children_is_per_domain(client, emb):

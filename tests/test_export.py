@@ -31,14 +31,14 @@ def _entity():
 class TestExportJson:
     def test_valid_json(self):
         out = io.StringIO()
-        export_json([_entity()], out)
+        export_json({"shared": [_entity()]}, out)
         data = json.loads(out.getvalue())
         assert isinstance(data, list)
         assert len(data) == 1
 
     def test_entity_fields(self):
         out = io.StringIO()
-        export_json([_entity()], out)
+        export_json({"shared": [_entity()]}, out)
         data = json.loads(out.getvalue())[0]
         assert data["id"] == "person:alice"
         assert data["type"] == "person"
@@ -46,7 +46,7 @@ class TestExportJson:
 
     def test_fact_fields(self):
         out = io.StringIO()
-        export_json([_entity()], out)
+        export_json({"shared": [_entity()]}, out)
         fact = json.loads(out.getvalue())[0]["facts"][0]
         assert fact["text"] == "Manages auth team"
         assert fact["hit_count"] == 4
@@ -54,27 +54,39 @@ class TestExportJson:
 
     def test_empty_export(self):
         out = io.StringIO()
-        export_json([], out)
+        export_json({}, out)
         assert json.loads(out.getvalue()) == []
 
 
 class TestExportMarkdown:
+    def test_single_domain_has_no_domain_heading(self):
+        out = io.StringIO()
+        export_markdown({"shared": [_entity()]}, out)
+        assert "# shared" not in out.getvalue()
+
+    def test_several_domains_get_headings(self):
+        out = io.StringIO()
+        export_markdown({"shared": [], "dev": [_entity()]}, out)
+        text = out.getvalue()
+        assert text.index("# dev\n") < text.index("## person:alice")
+        assert "# shared\n" in text
+
     def test_has_header(self):
         out = io.StringIO()
-        export_markdown([_entity()], out)
+        export_markdown({"shared": [_entity()]}, out)
         text = out.getvalue()
         assert "## person:alice" in text
 
     def test_has_facts(self):
         out = io.StringIO()
-        export_markdown([_entity()], out)
+        export_markdown({"shared": [_entity()]}, out)
         text = out.getvalue()
         assert "Manages auth team" in text
         assert "x4" in text
 
     def test_shows_expires(self):
         out = io.StringIO()
-        export_markdown([_entity()], out)
+        export_markdown({"shared": [_entity()]}, out)
         text = out.getvalue()
         assert "[expires 2026-12-31]" in text
 
@@ -82,25 +94,41 @@ class TestExportMarkdown:
 class TestImportJson:
     def test_roundtrip(self):
         out = io.StringIO()
-        export_json([_entity()], out)
+        export_json({"shared": [_entity()]}, out)
         data = json.loads(out.getvalue())
         imported = import_json(data)
         assert len(imported) == 1
-        assert imported[0].id == "person:alice"
-        assert len(imported[0].facts) == 2
+        assert imported[0][1].id == "person:alice"
+        assert len(imported[0][1].facts) == 2
 
     def test_preserves_fact_details(self):
         out = io.StringIO()
-        export_json([_entity()], out)
+        export_json({"shared": [_entity()]}, out)
         data = json.loads(out.getvalue())
         imported = import_json(data)
-        fact = imported[0].facts[0]
+        fact = imported[0][1].facts[0]
         assert fact.text == "Manages auth team"
         assert fact.hit_count == 4
         assert fact.source == "event:001"
 
     def test_empty_import(self):
         assert import_json([]) == []
+
+    def test_roundtrip_keeps_each_records_domain(self):
+        out = io.StringIO()
+        export_json({"dev": [_entity()], "personal": [_temporal_entity()]}, out)
+        data = json.loads(out.getvalue())
+        assert [r["domain"] for r in data] == ["dev", "personal"]
+        assert [d for d, _ in import_json(data)] == ["dev", "personal"]
+
+    def test_record_without_domain_is_shared(self):
+        # Exports from before issue #65 had no domain field; they were shared-only.
+        legacy = [{"id": "person:bob", "type": "person", "facts": []}]
+        assert import_json(legacy)[0][0] == "shared"
+
+    def test_unknown_domain_raises(self):
+        with pytest.raises(ValueError, match="unknown domain 'work'"):
+            import_json([{"domain": "work", "id": "person:bob", "type": "person"}])
 
 
 def _temporal_entity():
@@ -124,16 +152,16 @@ class TestExportImportTemporal:
 
     def test_export_includes_temporal_fields(self):
         out = io.StringIO()
-        export_json([_temporal_entity()], out)
+        export_json({"shared": [_temporal_entity()]}, out)
         london = json.loads(out.getvalue())[0]["facts"][0]
         assert london["superseded_at"] == "2026-03-01"
         assert london["superseded_by"] == "lives in Berlin"
 
     def test_roundtrip_preserves_history(self):
         out = io.StringIO()
-        export_json([_temporal_entity()], out)
+        export_json({"shared": [_temporal_entity()]}, out)
         imported = import_json(json.loads(out.getvalue()))
-        by_text = {f.text: f for f in imported[0].facts}
+        by_text = {f.text: f for f in imported[0][1].facts}
         # The superseded fact must come back superseded, not silently current.
         assert by_text["lives in London"].superseded_at == "2026-03-01"
         assert by_text["lives in London"].superseded_by == "lives in Berlin"
@@ -149,14 +177,14 @@ class TestExportImportTemporal:
             "facts": [{"text": "x", "added": "2026-01-01", "source": "e",
                        "last_seen": "2026-01-01", "hit_count": 1}],
         }]
-        fact = import_json(legacy)[0].facts[0]
+        fact = import_json(legacy)[0][1].facts[0]
         assert fact.superseded_at is None
         assert fact.valid_from is None
         assert fact.is_current is True
 
     def test_markdown_marks_superseded(self):
         out = io.StringIO()
-        export_markdown([_temporal_entity()], out)
+        export_markdown({"shared": [_temporal_entity()]}, out)
         assert "[superseded 2026-03-01]" in out.getvalue()
 
 
