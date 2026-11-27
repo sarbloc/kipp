@@ -447,3 +447,103 @@ def test_hook_module_does_not_import_qdrant_or_the_model():
                          check=True, env={"PYTHONPATH": str(Path(capture.__file__).parents[1])})
 
     assert out.stdout.strip() == "[]"
+
+
+# --- security bounds (Codex security pass on #71) ---------------------------------
+
+
+@pytest.mark.parametrize("wrapped", [
+    "_ghp_" + "A" * 36 + "_",
+    "*sk-" + "b" * 30 + "*",
+    "_AKIA" + "ABCDEFGHIJKLMNOP" + "_",
+    "__AIza" + "c" * 35 + "__",
+])
+def test_redacts_keys_wrapped_in_markdown(wrapped):
+    assert "[REDACTED]" in redact(wrapped)
+
+
+def test_word_containing_sk_dash_is_not_redacted():
+    assert redact("a risk-assessment-framework-document") == "a risk-assessment-framework-document"
+
+
+def test_unterminated_private_key_is_redacted_to_the_end():
+    out = redact("before -----BEGIN PRIVATE KEY-----\nMIIsecretmaterial")
+    assert out == "before [REDACTED]"
+
+
+def test_key_straddling_the_clip_point_is_redacted():
+    secret = "ghp_" + "Q" * 40
+    (t,) = turns([user("u-01", "x" * (capture.CLIP_CHARS - 5) + " " + secret + " tail" * 2000)])
+
+    assert "QQQQQ" not in t.user and "ghp_" not in t.user
+
+
+def _fast(fn, *args, limit=1.0):
+    import time
+    t0 = time.perf_counter()
+    fn(*args)
+    return time.perf_counter() - t0 < limit
+
+
+def test_stripping_many_unclosed_tags_is_linear():
+    assert _fast(strip_injected, "<context> " * 50000 + "</interrupt>" * 50000)
+
+
+def test_redacting_many_unterminated_pem_headers_is_linear():
+    assert _fast(redact, "-----BEGIN PRIVATE KEY----- " * 50000)
+
+
+def test_fifo_transcript_is_refused_without_blocking(tmp_path):
+    fifo = tmp_path / "pipe.jsonl"
+    os.mkfifo(fifo)
+    env = {**os.environ, "PYTHONPATH": str(Path(capture.__file__).parents[1])}
+
+    out = subprocess.run([sys.executable, "-m", "kipp.capture", "--file", str(fifo)],
+                         capture_output=True, text=True, timeout=10, env=env)
+
+    assert out.returncode == 1 and "not a regular file" in out.stderr
+
+
+def test_oversized_line_is_skipped_and_capture_continues(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 1000)
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "x" * 5000), user("u-02", "After the big one.")])
+
+    assert capture_transcript(t, session_id="s1", config=CFG) == 1
+    assert spooled()[0]["text"] == "User: After the big one."
+
+
+def test_oversized_partial_line_waits(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 1000)
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "First.")], partial="y" * 5000)
+    capture_transcript(t, session_id="s1", config=CFG)
+    with open(t, "a") as f:
+        f.write("\n" + json.dumps(user("u-02", "Second.")) + "\n")
+
+    capture_transcript(t, session_id="s1", config=CFG)
+
+    assert [r["text"] for r in spooled()][-1] == "User: Second."
+
+
+def test_symlinked_spool_is_refused(tmp_path):
+    capture.ensure_state_dir()
+    target = tmp_path / "elsewhere.txt"
+    target.write_text("")
+    spool_path().symlink_to(target)
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "Private words.")])
+
+    with pytest.raises(OSError):
+        capture_transcript(t, session_id="s1", config=CFG)
+    assert target.read_text() == ""
+
+
+def test_symlinked_state_dir_is_refused(tmp_path, monkeypatch):
+    real = tmp_path / "real"
+    (real / "kipp").mkdir(parents=True)
+    (real / "kipp" / "capture").symlink_to(tmp_path)
+    monkeypatch.setenv("XDG_STATE_HOME", str(real))
+
+    with pytest.raises(ValueError, match="symlink"):
+        capture.ensure_state_dir()

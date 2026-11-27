@@ -27,8 +27,10 @@ import json
 import logging
 import os
 import re
+import stat
 import sys
 import uuid
+from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -60,20 +62,28 @@ DEFAULT_STRIP_TAGS = (
     "interrupt",
 )
 
-# Best effort only: a format not listed here is stored as-is.
+# Best effort only: a format not listed here is stored as-is. A key may follow
+# any non-alphanumeric character, including Markdown's `_` and `*`. Every
+# pattern is a fixed prefix plus one character class, so matching stays linear.
+_B = r"(?<![A-Za-z0-9])"
 _SECRET_PATTERNS = [
-    re.compile(
-        r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----", re.S,
-    ),
-    re.compile(r"\bsk-[A-Za-z0-9_-]{20,}"),
-    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,}"),
-    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bAIza[0-9A-Za-z_-]{35}"),
-    re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{20,}"),
+    re.compile(_B + r"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(_B + r"gh[pousr]_[A-Za-z0-9]{36,}"),
+    re.compile(_B + r"github_pat_[A-Za-z0-9_]{22,}"),
+    re.compile(_B + r"AKIA[0-9A-Z]{16}(?![A-Za-z0-9])"),
+    re.compile(_B + r"AIza[0-9A-Za-z_-]{35}"),
+    re.compile(_B + r"xox[abprs]-[A-Za-z0-9-]{10,}"),
+    re.compile(r"(?i)" + _B + r"bearer\s+[A-Za-z0-9._~+/=-]{20,}"),
 ]
+_PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----")
+_PEM_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----")
 REDACTED = "[REDACTED]"
+# Redaction sees this much text past the clip point, so a key that starts
+# before the clip is matched whole. Longer than any single-line key.
+_REDACT_MARGIN = 1024
+# A transcript line longer than this is skipped unread, so one huge tool
+# output can't exhaust memory. Dialogue is clipped far below it anyway.
+MAX_LINE_BYTES = 16 << 20
 
 # Records Claude Code marks as not part of the visible dialogue.
 _SKIP_FLAGS = ("isSidechain", "isMeta", "isCompactSummary", "isApiErrorMessage",
@@ -114,56 +124,77 @@ def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS) -> str:
     """Remove injected ``<tag ...>...</tag>`` blocks and collapse the leftover blank lines.
 
     Nesting is balanced, so a block quoting another block of the same tag is
-    removed whole. An opening tag that's never closed is kept as literal text:
-    the user may simply have typed it.
+    removed whole. An opening tag that's never closed is kept as literal text
+    (the user may simply have typed it), and so is a stray closing tag. One
+    pass over the tags, so the cost is linear in the text.
     """
     names = "|".join(re.escape(t) for t in tags)
     if not names:
         return text.strip()
     token = re.compile(rf"<(/?)({names})(?:\s[^>]*)?>")
-    out: list[str] = []
-    i = 0
-    while True:
-        opening = next((m for m in token.finditer(text, i) if not m.group(1)), None)
-        if opening is None:
-            out.append(text[i:])
-            break
-        stack, end = [opening.group(2)], None
-        for m in token.finditer(text, opening.end()):
-            name = m.group(2)
-            if not m.group(1):
-                stack.append(name)
-            elif name in stack:
-                while stack.pop() != name:
-                    pass
-                if not stack:
-                    end = m.end()
-                    break
-        if end is None:  # never closed: keep the tag as text and move past it
-            out.append(text[i:opening.end()])
-            i = opening.end()
-        else:
-            out.append(text[i:opening.start()])
-            i = end
+    drops: list[tuple[int, int]] = []
+    # Open blocks: (tag, start, closed regions inside it). A region is only
+    # final once its outermost block closes, or when its parent never does.
+    stack: list[tuple[str, int, list[tuple[int, int]]]] = []
+    open_count: Counter[str] = Counter()
+    for m in token.finditer(text):
+        name = m.group(2)
+        if not m.group(1):
+            stack.append((name, m.start(), []))
+            open_count[name] += 1
+            continue
+        if not open_count[name]:
+            continue  # stray closing tag: literal text
+        while True:  # blocks opened inside this one but never closed go with it
+            top, top_start, _ = stack.pop()
+            open_count[top] -= 1
+            if top == name:
+                break
+        (stack[-1][2] if stack else drops).append((top_start, m.end()))
+    for _, _, regions in stack:  # unclosed blocks stay as text; their closed children don't
+        drops.extend(regions)
+    out, i = [], 0
+    for a, b in sorted(drops):
+        out.append(text[i:a])
+        i = b
+    out.append(text[i:])
     return re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
 
 
+def _redact_pem(text: str) -> str:
+    """Replace private-key blocks. One with no END marker is redacted to the end of the text."""
+    out, i = [], 0
+    while (begin := _PEM_BEGIN.search(text, i)) is not None:
+        out.append(text[i:begin.start()])
+        out.append(REDACTED)
+        end = _PEM_END.search(text, begin.end())
+        if end is None:
+            return "".join(out)
+        i = end.end()
+    out.append(text[i:])
+    return "".join(out)
+
+
 def redact(text: str) -> str:
+    text = _redact_pem(text)
     for pattern in _SECRET_PATTERNS:
         text = pattern.sub(REDACTED, text)
     return text
 
 
-def clip(text: str, limit: int = CLIP_CHARS) -> str:
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]} [...clipped {len(text) - limit} chars]"
+def clip(text: str, limit: int = CLIP_CHARS, hidden: int = 0) -> str:
+    """Cut ``text`` to ``limit`` chars; ``hidden`` counts chars already cut before this call."""
+    cut = max(0, len(text) - limit) + hidden
+    return f"{text[:limit]} [...clipped {cut} chars]" if cut else text
 
 
 def clean(text: str, tags: Iterable[str]) -> str:
-    # Redact before clipping, so a clip can't cut a secret in half and leave
-    # a fragment the patterns no longer match.
-    return clip(redact(strip_injected(text, tags)))
+    stripped = strip_injected(text, tags)
+    # Redact a window reaching past the clip point, then clip: a clip can't cut
+    # a secret in half and leave a fragment the patterns miss, and redaction
+    # cost stays bounded however long the message is.
+    window = stripped[: CLIP_CHARS + _REDACT_MARGIN]
+    return clip(redact(window), hidden=len(stripped) - len(window))
 
 
 # --- Claude Code transcripts ---------------------------------------------------
@@ -268,37 +299,68 @@ ADAPTERS: dict[str, Callable[..., Iterator[Turn]]] = {"claude-code": claude_code
 # --- reading new transcript lines ---------------------------------------------
 
 
-def read_new_records(path: Path, offset: int) -> tuple[list[tuple[int, dict]], int]:
-    """Parse the complete JSONL lines after ``offset``.
+def open_transcript(path: Path):
+    """Open a transcript for reading, refusing anything but a regular file.
 
-    Returns ``(start_offset, record)`` pairs and the offset just past the last
-    complete line. A trailing line without a newline is still being written,
-    so it's left for the next run. The caller validates ``offset`` against the
-    cursor's fingerprint first (``_read_cursor``).
+    Opened non-blocking first, so a FIFO path can't hang the hook.
     """
-    size = path.stat().st_size
-    if offset > size:
-        offset = 0
-    with open(path, "rb") as f:
-        f.seek(offset)
-        chunk = f.read()
-    end = chunk.rfind(b"\n")
-    if end < 0:
-        return [], offset
-    records = []
-    pos = offset
-    for line in chunk[: end + 1].split(b"\n")[:-1]:
-        start, pos = pos, pos + len(line) + 1
-        if not line.strip():
-            continue
-        try:
-            rec = json.loads(line)
-        except (ValueError, RecursionError):  # bad JSON, bad UTF-8, absurd nesting
-            log.warning("skipping malformed transcript line at byte %d in %s", start, path)
-            continue
-        if isinstance(rec, dict):
-            records.append((start, rec))
-    return records, offset + end + 1
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"{path} is not a regular file")
+        os.set_blocking(fd, True)
+        return os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+class TranscriptReader:
+    """Iterate ``(start_offset, record)`` over the complete JSONL lines after ``offset``.
+
+    Streams line by line, so memory is bounded by the longest line, and lines
+    over ``MAX_LINE_BYTES`` are skipped without being held. A trailing line
+    without a newline is still being written, so it's left for the next run.
+    After iterating, ``end`` is the offset just past the last complete line.
+    """
+
+    def __init__(self, f, offset: int, name: str = "transcript"):
+        self._f, self.end, self._name = f, offset, name
+
+    def __iter__(self) -> Iterator[tuple[int, dict]]:
+        f = self._f
+        f.seek(self.end)
+        while line := f.readline(MAX_LINE_BYTES + 1):
+            start = self.end
+            if not line.endswith(b"\n"):
+                if len(line) <= MAX_LINE_BYTES:
+                    return  # partial last line
+                length = self._skip_rest(len(line))
+                if length is None:
+                    return  # oversized and still being written
+                self.end += length
+                log.warning("skipping a %d-byte transcript line at byte %d in %s",
+                            length, start, self._name)
+                continue
+            self.end += len(line)
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except (ValueError, RecursionError):  # bad JSON, bad UTF-8, absurd nesting
+                log.warning("skipping malformed transcript line at byte %d in %s",
+                            start, self._name)
+                continue
+            if isinstance(rec, dict):
+                yield start, rec
+
+    def _skip_rest(self, length: int) -> int | None:
+        """Read past the rest of an oversized line; its total length, or None at EOF."""
+        while chunk := self._f.readline(1 << 20):
+            length += len(chunk)
+            if chunk.endswith(b"\n"):
+                return length
+        return None
 
 
 # --- state: cursors, spool, lock -----------------------------------------------
@@ -314,8 +376,18 @@ def ensure_state_dir() -> Path:
     """Create the capture directory, private to the user: it holds conversation text."""
     d = state_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if d.is_symlink():
+        raise ValueError(f"{d} is a symlink; refusing to write conversation text through it")
     os.chmod(d, 0o700)  # mkdir's mode is masked by umask and skipped if it exists
     return d
+
+
+_PRIVATE_FLAGS = os.O_CREAT | os.O_NOFOLLOW
+
+
+def _open_private(path: Path, flags: int):
+    """Open a state file 0600, refusing a symlink planted in its place."""
+    return os.open(path, flags | _PRIVATE_FLAGS, 0o600)
 
 
 def spool_path() -> Path:
@@ -330,15 +402,14 @@ def _cursor_path(client: str, session_id: str) -> Path:
 _FINGERPRINT_BYTES = 256
 
 
-def _fingerprint(path: Path, offset: int) -> str:
+def _fingerprint(f, offset: int) -> str:
     """Hash of the bytes just before ``offset``. Appends never change them; a rewrite does."""
     start = max(0, offset - _FINGERPRINT_BYTES)
-    with open(path, "rb") as f:
-        f.seek(start)
-        return hashlib.sha256(f.read(offset - start)).hexdigest()
+    f.seek(start)
+    return hashlib.sha256(f.read(offset - start)).hexdigest()
 
 
-def _read_cursor(client: str, session_id: str, transcript: Path) -> int:
+def _read_cursor(client: str, session_id: str, transcript: Path, f) -> int:
     """The saved offset, or 0 when there is none or the transcript was replaced or rewritten.
 
     Restarting is always safe: turn ids are stable, so the flush deduplicates.
@@ -354,23 +425,27 @@ def _read_cursor(client: str, session_id: str, transcript: Path) -> int:
     offset = data.get("offset") if isinstance(data, dict) else None
     if not isinstance(offset, int) or offset < 0 or data.get("path") != str(transcript):
         return 0
-    st = transcript.stat()
+    st = os.fstat(f.fileno())
     if (data.get("inode") != st.st_ino or offset > st.st_size
-            or data.get("fingerprint") != _fingerprint(transcript, offset)):
+            or data.get("fingerprint") != _fingerprint(f, offset)):
         log.info("transcript %s changed since the last capture; recapturing from the start",
                  transcript)
         return 0
     return offset
 
 
-def _write_cursor(client: str, session_id: str, transcript: Path, offset: int) -> None:
+def _write_cursor(client: str, session_id: str, transcript: Path, f, offset: int) -> None:
     p = _cursor_path(client, session_id)
     p.parent.mkdir(exist_ok=True, mode=0o700)
+    if p.parent.is_symlink():
+        raise ValueError(f"{p.parent} is a symlink; refusing to write through it")
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({
-        "path": str(transcript), "offset": offset, "inode": transcript.stat().st_ino,
-        "fingerprint": _fingerprint(transcript, offset),
-    }))
+    data = json.dumps({
+        "path": str(transcript), "offset": offset, "inode": os.fstat(f.fileno()).st_ino,
+        "fingerprint": _fingerprint(f, offset),
+    })
+    with os.fdopen(_open_private(tmp, os.O_WRONLY | os.O_TRUNC), "w") as out:
+        out.write(data)
     tmp.replace(p)
 
 
@@ -382,7 +457,7 @@ class _Lock:
     """
 
     def __enter__(self):
-        self._f = open(ensure_state_dir() / "capture.lock", "w")
+        self._f = os.fdopen(_open_private(ensure_state_dir() / "capture.lock", os.O_RDWR), "r+b")
         fcntl.flock(self._f, fcntl.LOCK_EX)
         return self
 
@@ -397,8 +472,7 @@ def _append_to_spool(data: str) -> None:
     Called under ``_Lock``. Without the repair, a record half-written when the
     disk filled would swallow the first record of the next append.
     """
-    fd = os.open(spool_path(), os.O_RDWR | os.O_CREAT, 0o600)
-    with os.fdopen(fd, "r+b") as f:
+    with os.fdopen(_open_private(spool_path(), os.O_RDWR), "r+b") as f:
         size = f.seek(0, os.SEEK_END)
         if size:
             f.seek(size - 1)
@@ -477,13 +551,21 @@ def capture_transcript(
     """
     config = config or CaptureConfig.load()
     adapter = ADAPTERS[client]
-    with _Lock():
-        offset = _read_cursor(client, session_id, transcript)
-        located, end_offset = read_new_records(transcript, offset)
-        starts = {rec["uuid"]: start for start, rec in located if isinstance(rec.get("uuid"), str)}
-        records = [rec for _, rec in located]
-        turns = list(adapter(records, session_id=session_id, cwd=cwd, tags=config.strip_tags))
-        new_offset = starts[turns[-1].anchor] if turns else end_offset
+    with _Lock(), open_transcript(transcript) as f:
+        offset = _read_cursor(client, session_id, transcript, f)
+        reader = TranscriptReader(f, offset, str(transcript))
+        starts: dict[str, int] = {}
+
+        def records() -> Iterator[dict]:
+            # Records stream through the adapter one at a time; only their
+            # start offsets are kept, to place the cursor.
+            for start, rec in reader:
+                if isinstance(rec.get("uuid"), str):
+                    starts[rec["uuid"]] = start
+                yield rec
+
+        turns = list(adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags))
+        new_offset = starts[turns[-1].anchor] if turns else reader.end
         if turns:
             lines = []
             for t in turns:
@@ -491,7 +573,7 @@ def capture_transcript(
                 lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
             _append_to_spool("".join(lines))
         if new_offset != offset:
-            _write_cursor(client, session_id, transcript, new_offset)
+            _write_cursor(client, session_id, transcript, f, new_offset)
     return len(turns)
 
 
