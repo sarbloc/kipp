@@ -192,11 +192,21 @@ def clip(text: str, limit: int = CLIP_CHARS, hidden: int = 0) -> str:
 
 def clean(text: str, tags: Iterable[str]) -> str:
     stripped = strip_injected(text, tags)
-    # Redact a window reaching past the clip point, then clip: a clip can't cut
-    # a secret in half and leave a fragment the patterns miss, and redaction
-    # cost stays bounded however long the message is.
-    window = stripped[: CLIP_CHARS + _REDACT_MARGIN]
-    return clip(redact(window), hidden=len(stripped) - len(window))
+    # Redact a window reaching past the clip point, then clip, so a clip can't
+    # cut a secret in half and leave a fragment the patterns miss. Redaction can
+    # shrink the window (a long key becomes "[REDACTED]"), which would pull a
+    # secret cut at the window's edge back inside the clip; so the window
+    # doubles until the redacted text still reaches the margin. Cost stays
+    # linear in the text.
+    need = CLIP_CHARS + _REDACT_MARGIN
+    size = need
+    while True:
+        window = stripped[:size]
+        red = redact(window)
+        if len(red) >= need or size >= len(stripped):
+            break
+        size *= 2
+    return clip(red, hidden=len(stripped) - len(window))
 
 
 # --- Claude Code transcripts ---------------------------------------------------
