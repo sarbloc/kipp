@@ -2,6 +2,8 @@
 
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
@@ -143,11 +145,17 @@ def test_unknown_and_malformed_records_are_skipped():
     out = turns([
         {"type": "ai-title", "title": "x"},
         {"type": "user", "message": {"content": "no uuid"}},
+        {"type": "user", "uuid": "u-07", "message": ["not", "a", "dict"]},
+        {"type": "assistant", "uuid": "a-07", "message": "a string"},
+        {"type": "user", "uuid": 7, "message": {"content": "numeric uuid"}},
+        {"type": "user", "uuid": "u-08", "cwd": ["x"], "timestamp": 5,
+         "message": {"content": [{"type": "text", "text": 12}, text("Odd fields.")]}},
         user("u-01", {"unexpected": "shape"}),
         user("u-02", "Kept."),
     ])
 
-    assert [t.user for t in out] == ["Kept."]
+    assert [t.user for t in out] == ["Odd fields.", "Kept."]
+    assert out[0].cwd == "" and out[0].timestamp == ""
 
 
 def test_turn_ids_are_stable_per_session_and_anchor():
@@ -286,6 +294,19 @@ def test_shrunk_transcript_is_read_from_the_start(tmp_path):
     assert spooled()[-1]["text"] == "User: Fresh."
 
 
+def test_spool_and_state_dir_are_private(tmp_path):
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "Ask.")])
+    old = os.umask(0o022)
+    try:
+        capture_transcript(t, session_id="s1", config=CFG)
+    finally:
+        os.umask(old)
+
+    assert stat.S_IMODE(os.stat(capture.state_dir()).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(spool_path()).st_mode) == 0o600
+
+
 def test_no_new_dialogue_spools_nothing(tmp_path):
     t = tmp_path / "s1.jsonl"
     write(t, [{"type": "ai-title", "title": "x"}])
@@ -323,6 +344,15 @@ def test_hook_never_fails_and_logs_why(monkeypatch, payload):
     log_text = (capture.state_dir() / "capture.log").read_text()
     assert "ERROR" in log_text
     assert not spool_path().exists()
+
+
+def test_hook_exits_0_when_the_state_dir_is_unusable(tmp_path, monkeypatch, capsys):
+    blocker = tmp_path / "blocked"
+    blocker.write_text("a file where the state dir should be")
+    monkeypatch.setenv("XDG_STATE_HOME", str(blocker))
+
+    assert run_hook(monkeypatch, json.dumps({"session_id": "s1", "transcript_path": "x"})) == 0
+    assert "can't open the capture log" in capsys.readouterr().err
 
 
 def test_file_mode_reports_errors_with_exit_1(tmp_path, capsys):

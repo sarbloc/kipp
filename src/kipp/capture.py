@@ -141,9 +141,13 @@ def _text_blocks(content) -> list[str]:
     if isinstance(content, str):
         return [content]
     if isinstance(content, list):
-        return [b.get("text", "") for b in content
-                if isinstance(b, dict) and b.get("type") == "text"]
+        return [b["text"] for b in content
+                if isinstance(b, dict) and b.get("type") == "text" and isinstance(b.get("text"), str)]
     return []
+
+
+def _str(value) -> str:
+    return value if isinstance(value, str) else ""
 
 
 def _is_tool_result(content) -> bool:
@@ -184,10 +188,11 @@ def claude_code_turns(
         kind = r.get("type")
         if kind not in ("user", "assistant") or any(r.get(f) for f in _SKIP_FLAGS):
             continue
-        content = (r.get("message") or {}).get("content")
+        message = r.get("message")
         anchor = r.get("uuid")
-        if not anchor:
+        if not isinstance(message, dict) or not isinstance(anchor, str) or not anchor:
             continue
+        content = message.get("content")
         if kind == "user":
             if _is_tool_result(content):
                 continue
@@ -198,15 +203,15 @@ def claude_code_turns(
             done = finish(turn)
             if done:
                 yield done
-            turn = {"anchor": anchor, "timestamp": r.get("timestamp", ""),
-                    "cwd": r.get("cwd", ""), "user": texts, "assistant": []}
+            turn = {"anchor": anchor, "timestamp": _str(r.get("timestamp")),
+                    "cwd": _str(r.get("cwd")), "user": texts, "assistant": []}
         else:
             texts = [t for t in _text_blocks(content) if t.strip() and t.strip() != "(no content)"]
             if not texts:
                 continue
             if turn is None:
-                turn = {"anchor": anchor, "timestamp": r.get("timestamp", ""),
-                        "cwd": r.get("cwd", ""), "user": [], "assistant": []}
+                turn = {"anchor": anchor, "timestamp": _str(r.get("timestamp")),
+                        "cwd": _str(r.get("cwd")), "user": [], "assistant": []}
             turn["assistant"].extend(texts)
     done = finish(turn)
     if done:
@@ -262,6 +267,14 @@ def state_dir() -> Path:
     return base / "kipp" / "capture"
 
 
+def ensure_state_dir() -> Path:
+    """Create the capture directory, private to the user: it holds conversation text."""
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(d, 0o700)  # mkdir's mode is masked by umask and skipped if it exists
+    return d
+
+
 def spool_path() -> Path:
     return state_dir() / "spool.jsonl"
 
@@ -287,7 +300,7 @@ def _read_cursor(client: str, session_id: str, transcript: Path) -> int:
 
 def _write_cursor(client: str, session_id: str, transcript: Path, offset: int) -> None:
     p = _cursor_path(client, session_id)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    p.parent.mkdir(exist_ok=True, mode=0o700)
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps({"path": str(transcript), "offset": offset}))
     tmp.replace(p)
@@ -301,8 +314,7 @@ class _Lock:
     """
 
     def __enter__(self):
-        state_dir().mkdir(parents=True, exist_ok=True)
-        self._f = open(state_dir() / "capture.lock", "w")
+        self._f = open(ensure_state_dir() / "capture.lock", "w")
         fcntl.flock(self._f, fcntl.LOCK_EX)
         return self
 
@@ -384,7 +396,8 @@ def capture_transcript(
             for t in turns:
                 t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
                 lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
-            with open(spool_path(), "a", encoding="utf-8") as f:
+            fd = os.open(spool_path(), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
                 f.write("".join(lines))
                 f.flush()
                 os.fsync(f.fileno())
@@ -397,13 +410,19 @@ def capture_transcript(
 
 
 def _setup_logging(hook: bool) -> None:
+    handler: logging.Handler = logging.StreamHandler(sys.stderr)
     if hook:
-        # A hook's stderr isn't shown to the operator, so errors go to a file.
-        state_dir().mkdir(parents=True, exist_ok=True)
-        handler: logging.Handler = logging.FileHandler(state_dir() / "capture.log")
-    else:
-        handler = logging.StreamHandler(sys.stderr)
+        # A hook's stderr isn't shown to the operator, so errors go to a file,
+        # falling back to stderr if the state directory isn't writable.
+        try:
+            handler = logging.FileHandler(ensure_state_dir() / "capture.log")
+        except OSError as exc:
+            print(f"kipp-capture: can't open the capture log ({exc}); logging to stderr",
+                  file=sys.stderr)
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    for old in list(log.handlers):  # main() can run more than once in one process
+        log.removeHandler(old)
+        old.close()
     log.addHandler(handler)
     log.setLevel(logging.INFO)
 
