@@ -481,7 +481,7 @@ def test_key_straddling_the_clip_point_is_redacted():
 def test_secret_at_window_edge_after_an_earlier_redaction_is_caught():
     pem = "-----BEGIN PRIVATE KEY-----\n" + "M" * 1500 + "\n-----END PRIVATE KEY-----"
     token = "ghp_" + "T" * 36
-    msg = pem + " " + "p" * (4985 - len(pem) - 1) + token + " end" * 500
+    msg = pem + " " + "p" * (4985 - len(pem) - 2) + " " + token + " end" * 500
     (t,) = turns([user("u-01", msg)])
 
     assert "TTTTTTTTTT" not in t.user and "ghp_" not in t.user
