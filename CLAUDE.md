@@ -53,6 +53,7 @@ The four kinds:
 | File | Purpose |
 |------|---------|
 | `cli.py` | Click CLI entry point for all commands |
+| `config.py` | Config resolution and `DOMAINS`, standard library only (re-exported by `client.py`) |
 | `client.py` | Qdrant client wrapper, collection initialization, domain-aware CRUD |
 | `embedder.py` | sentence-transformers wrapper |
 | `models.py` | Dataclasses: Fact, Entity, Event |
@@ -65,6 +66,7 @@ The four kinds:
 | `evaluate.py` | `kipp eval`: recall scoring against a JSONL known-answer case file |
 | `split.py` | Split oversized entities: `plan_split` (Ward clustering), `move_facts` (target first, never loses a fact), `apply_plan` |
 | `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |
+| `capture.py` | `kipp-capture`: transcript → per-turn spool records (hook path, standard library only, never imports Qdrant or the model) |
 
 ### MCP entrypoint
 

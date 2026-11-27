@@ -39,6 +39,7 @@ Changelog = "https://github.com/sarbloc/kipp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 kipp = "kipp.cli:main"
+kipp-capture = "kipp.capture:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
