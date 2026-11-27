@@ -135,6 +135,18 @@ def test_injection_only_user_message_does_not_open_a_turn():
     assert [(t.user, t.assistant) for t in out] == [("Ask.", "Answer.\n\nMore answer.")]
 
 
+def test_image_only_message_is_its_own_turn():
+    out = turns([
+        user("u-01", "Ask."),
+        assistant("a-01", text("Answer.")),
+        user("u-02", [{"type": "image", "source": {"type": "base64", "data": "AAAA"}}]),
+        assistant("a-02", text("That's a cat.")),
+    ])
+
+    assert [(t.user, t.assistant) for t in out] == [("Ask.", "Answer."), ("[image]", "That's a cat.")]
+    assert "AAAA" not in out[1].text
+
+
 def test_unprompted_reply_gets_a_turn_with_no_user_side():
     (t,) = turns([assistant("a-01", text("Background build finished."))])
 

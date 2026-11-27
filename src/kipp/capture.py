@@ -178,6 +178,18 @@ def _text_blocks(content) -> list[str]:
     return []
 
 
+def _attachment_markers(content) -> list[str]:
+    """``[image]``-style placeholders for a message with attachments but no text.
+
+    The attachment isn't stored, but the marker keeps it a turn of its own, so
+    its reply isn't merged into the previous exchange.
+    """
+    if not isinstance(content, list):
+        return []
+    return [f"[{b['type']}]" for b in content
+            if isinstance(b, dict) and b.get("type") in ("image", "document")]
+
+
 def _str(value) -> str:
     return value if isinstance(value, str) else ""
 
@@ -229,7 +241,7 @@ def claude_code_turns(
             if _is_tool_result(content):
                 continue
             texts = [strip_injected(t, tags) for t in _text_blocks(content)]
-            texts = [t for t in texts if t]
+            texts = [t for t in texts if t] or _attachment_markers(content)
             if not texts:
                 continue
             done = finish(turn)
