@@ -175,6 +175,19 @@ def test_strip_injected_handles_attributes_and_multiline():
     assert strip_injected(raw) == "Hi\n\nthere"
 
 
+def test_strip_injected_removes_nested_blocks_whole():
+    raw = "<context>outer<context>inner</context>injected</context>question"
+    assert strip_injected(raw) == "question"
+    mixed = "<system-reminder>a<context>b</context>c</system-reminder>kept"
+    assert strip_injected(mixed) == "kept"
+
+
+def test_strip_injected_keeps_unclosed_and_stray_tags_as_text():
+    assert strip_injected("I typed <context> here") == "I typed <context> here"
+    assert strip_injected("stray </context> close") == "stray </context> close"
+    assert strip_injected("<context>open <context>x</context> tail") == "<context>open  tail"
+
+
 @pytest.mark.parametrize("secret", [
     "sk-ant-api03-" + "a" * 40,
     "ghp_" + "A" * 36,
@@ -348,6 +361,17 @@ def test_undecodable_and_broken_lines_are_skipped(tmp_path):
                   + (json.dumps(user("u-01", "Good.")) + "\n").encode())
 
     assert capture_transcript(t, session_id="s1", config=CFG) == 1
+
+
+def test_partial_spool_record_is_cut_before_appending(tmp_path):
+    capture.ensure_state_dir()
+    spool_path().write_text('{"id": "old", "text": "complete"}\n{"id": "half", "te')
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "Ask.")])
+
+    capture_transcript(t, session_id="s1", config=CFG)
+
+    assert [r.get("text") for r in spooled()] == ["complete", "User: Ask."]
 
 
 def test_no_new_dialogue_spools_nothing(tmp_path):

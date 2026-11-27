@@ -111,10 +111,41 @@ class Turn:
 
 
 def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS) -> str:
-    """Remove injected ``<tag ...>...</tag>`` blocks and collapse the leftover blank lines."""
-    for tag in tags:
-        text = re.sub(rf"<{re.escape(tag)}(\s[^>]*)?>.*?</{re.escape(tag)}>", "", text, flags=re.S)
-    return re.sub(r"\n{3,}", "\n\n", text).strip()
+    """Remove injected ``<tag ...>...</tag>`` blocks and collapse the leftover blank lines.
+
+    Nesting is balanced, so a block quoting another block of the same tag is
+    removed whole. An opening tag that's never closed is kept as literal text:
+    the user may simply have typed it.
+    """
+    names = "|".join(re.escape(t) for t in tags)
+    if not names:
+        return text.strip()
+    token = re.compile(rf"<(/?)({names})(?:\s[^>]*)?>")
+    out: list[str] = []
+    i = 0
+    while True:
+        opening = next((m for m in token.finditer(text, i) if not m.group(1)), None)
+        if opening is None:
+            out.append(text[i:])
+            break
+        stack, end = [opening.group(2)], None
+        for m in token.finditer(text, opening.end()):
+            name = m.group(2)
+            if not m.group(1):
+                stack.append(name)
+            elif name in stack:
+                while stack.pop() != name:
+                    pass
+                if not stack:
+                    end = m.end()
+                    break
+        if end is None:  # never closed: keep the tag as text and move past it
+            out.append(text[i:opening.end()])
+            i = opening.end()
+        else:
+            out.append(text[i:opening.start()])
+            i = end
+    return re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()
 
 
 def redact(text: str) -> str:
@@ -348,6 +379,31 @@ class _Lock:
         self._f.close()
 
 
+def _append_to_spool(data: str) -> None:
+    """Append records to the spool, first cutting any partial record a failed write left.
+
+    Called under ``_Lock``. Without the repair, a record half-written when the
+    disk filled would swallow the first record of the next append.
+    """
+    fd = os.open(spool_path(), os.O_RDWR | os.O_CREAT, 0o600)
+    with os.fdopen(fd, "r+b") as f:
+        size = f.seek(0, os.SEEK_END)
+        if size:
+            f.seek(size - 1)
+            if f.read(1) != b"\n":
+                tail_start = max(0, size - (1 << 20))
+                f.seek(tail_start)
+                last_nl = f.read().rfind(b"\n")
+                keep = tail_start + last_nl + 1 if last_nl >= 0 else 0
+                log.warning("cutting a %d-byte partial record from the end of %s",
+                            size - keep, spool_path())
+                f.truncate(keep)
+                f.seek(keep)
+        f.write(data.encode("utf-8"))
+        f.flush()
+        os.fsync(f.fileno())
+
+
 # --- domain routing ------------------------------------------------------------
 
 
@@ -421,11 +477,7 @@ def capture_transcript(
             for t in turns:
                 t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
                 lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
-            fd = os.open(spool_path(), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write("".join(lines))
-                f.flush()
-                os.fsync(f.fileno())
+            _append_to_spool("".join(lines))
         if new_offset != offset:
             _write_cursor(client, session_id, transcript, new_offset)
     return len(turns)
