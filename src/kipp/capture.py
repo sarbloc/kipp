@@ -588,7 +588,8 @@ def _setup_logging(hook: bool) -> None:
         # A hook's stderr isn't shown to the operator, so errors go to a file,
         # falling back to stderr if the state directory isn't writable.
         try:
-            handler = logging.FileHandler(ensure_state_dir() / "capture.log")
+            log_fd = _open_private(ensure_state_dir() / "capture.log", os.O_WRONLY | os.O_APPEND)
+            handler = logging.StreamHandler(os.fdopen(log_fd, "a", encoding="utf-8"))
         except (OSError, ValueError) as exc:  # unwritable, or a refused symlink
             print(f"kipp-capture: can't open the capture log ({exc}); logging to stderr",
                   file=sys.stderr)

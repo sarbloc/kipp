@@ -553,6 +553,17 @@ def test_symlinked_spool_is_refused(tmp_path):
     assert target.read_text() == ""
 
 
+def test_symlinked_log_is_refused(tmp_path, monkeypatch, capsys):
+    capture.ensure_state_dir()
+    target = tmp_path / "elsewhere.log"
+    target.write_text("")
+    (capture.state_dir() / "capture.log").symlink_to(target)
+
+    assert run_hook(monkeypatch, "{}") == 0
+    assert target.read_text() == ""
+    assert "can't open the capture log" in capsys.readouterr().err
+
+
 def test_symlinked_state_dir_is_refused(tmp_path, monkeypatch):
     real = tmp_path / "real"
     (real / "kipp").mkdir(parents=True)
