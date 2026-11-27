@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -228,10 +229,9 @@ def read_new_records(path: Path, offset: int) -> tuple[list[tuple[int, dict]], i
     """Parse the complete JSONL lines after ``offset``.
 
     Returns ``(start_offset, record)`` pairs and the offset just past the last
-    complete line.
-    A trailing line without a newline is still being written, so it's left for
-    the next run. If the file is now shorter than ``offset`` it was replaced, so
-    reading restarts from 0 (turn ids are stable, so nothing duplicates).
+    complete line. A trailing line without a newline is still being written,
+    so it's left for the next run. The caller validates ``offset`` against the
+    cursor's fingerprint first (``_read_cursor``).
     """
     size = path.stat().st_size
     if offset > size:
@@ -284,7 +284,22 @@ def _cursor_path(client: str, session_id: str) -> Path:
     return state_dir() / "cursors" / f"{safe}.json"
 
 
+_FINGERPRINT_BYTES = 256
+
+
+def _fingerprint(path: Path, offset: int) -> str:
+    """Hash of the bytes just before ``offset``. Appends never change them; a rewrite does."""
+    start = max(0, offset - _FINGERPRINT_BYTES)
+    with open(path, "rb") as f:
+        f.seek(start)
+        return hashlib.sha256(f.read(offset - start)).hexdigest()
+
+
 def _read_cursor(client: str, session_id: str, transcript: Path) -> int:
+    """The saved offset, or 0 when there is none or the transcript was replaced or rewritten.
+
+    Restarting is always safe: turn ids are stable, so the flush deduplicates.
+    """
     p = _cursor_path(client, session_id)
     try:
         data = json.loads(p.read_text())
@@ -293,16 +308,26 @@ def _read_cursor(client: str, session_id: str, transcript: Path) -> int:
     except (OSError, json.JSONDecodeError) as exc:
         log.warning("unreadable cursor %s (%s); recapturing from the start", p, exc)
         return 0
-    if data.get("path") != str(transcript):
+    offset = data.get("offset") if isinstance(data, dict) else None
+    if not isinstance(offset, int) or offset < 0 or data.get("path") != str(transcript):
         return 0
-    return int(data.get("offset", 0))
+    st = transcript.stat()
+    if (data.get("inode") != st.st_ino or offset > st.st_size
+            or data.get("fingerprint") != _fingerprint(transcript, offset)):
+        log.info("transcript %s changed since the last capture; recapturing from the start",
+                 transcript)
+        return 0
+    return offset
 
 
 def _write_cursor(client: str, session_id: str, transcript: Path, offset: int) -> None:
     p = _cursor_path(client, session_id)
     p.parent.mkdir(exist_ok=True, mode=0o700)
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"path": str(transcript), "offset": offset}))
+    tmp.write_text(json.dumps({
+        "path": str(transcript), "offset": offset, "inode": transcript.stat().st_ino,
+        "fingerprint": _fingerprint(transcript, offset),
+    }))
     tmp.replace(p)
 
 
@@ -387,7 +412,7 @@ def capture_transcript(
     with _Lock():
         offset = _read_cursor(client, session_id, transcript)
         located, end_offset = read_new_records(transcript, offset)
-        starts = {rec.get("uuid"): start for start, rec in located}
+        starts = {rec["uuid"]: start for start, rec in located if isinstance(rec.get("uuid"), str)}
         records = [rec for _, rec in located]
         turns = list(adapter(records, session_id=session_id, cwd=cwd, tags=config.strip_tags))
         new_offset = starts[turns[-1].anchor] if turns else end_offset

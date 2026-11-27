@@ -307,6 +307,41 @@ def test_spool_and_state_dir_are_private(tmp_path):
     assert stat.S_IMODE(os.stat(spool_path()).st_mode) == 0o600
 
 
+def test_rewritten_transcript_longer_than_the_cursor_restarts(tmp_path):
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "One."), user("u-02", "Two.")])
+    capture_transcript(t, session_id="s1", config=CFG)
+    write(t, [user("u-07", "Replacement first message, long enough to pass the cursor."),
+              user("u-08", "Replacement second.")])
+
+    capture_transcript(t, session_id="s1", config=CFG)
+
+    texts = [r["text"] for r in spooled()]
+    assert "User: Replacement first message, long enough to pass the cursor." in texts
+
+
+def test_replaced_file_with_same_prefix_bytes_restarts_on_inode(tmp_path):
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "One."), user("u-02", "Two.")])
+    capture_transcript(t, session_id="s1", config=CFG)
+    new = tmp_path / "new.jsonl"
+    write(new, [user("u-01", "One."), user("u-02", "Two.")])
+    new.replace(t)
+
+    capture_transcript(t, session_id="s1", config=CFG)
+
+    assert [r["text"] for r in spooled()].count("User: One.") == 2
+
+
+def test_record_with_non_string_uuid_does_not_stall_capture(tmp_path):
+    t = tmp_path / "s1.jsonl"
+    write(t, [{"type": "user", "uuid": ["bad"], "message": {"content": "x"}},
+              {"type": "user", "uuid": {"bad": 1}, "message": {"content": "y"}},
+              user("u-01", "Good.")])
+
+    assert capture_transcript(t, session_id="s1", config=CFG) == 1
+
+
 def test_no_new_dialogue_spools_nothing(tmp_path):
     t = tmp_path / "s1.jsonl"
     write(t, [{"type": "ai-title", "title": "x"}])
