@@ -129,8 +129,9 @@ kipp init
 
 The `shared` domain uses the bare collection names (`entities`, `events`,
 `decisions`, `facts`); the others are prefixed (`dev_entities`, ...).
-MCP tools and most CLI commands take a domain, defaulting to `shared`;
-`export` and `import` cover `shared` only.
+MCP tools and most CLI commands take a domain, defaulting to `shared`.
+`kipp export --domain all` writes every domain, and `kipp import` restores
+each record to the domain it came from.
 
 ## Upgrading from entity-memory
 
