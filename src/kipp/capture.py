@@ -329,7 +329,10 @@ def claude_code_turns(
             turn = _new_turn(anchor, r)
             _add(turn, "user", texts)
         else:
-            texts = [t for t in _text_blocks(content) if t.strip() and t.strip() != "(no content)"]
+            # Stripped per block, like the user side, so the side cap can't cut
+            # an injected block's closing tag off and keep the block.
+            texts = [strip_injected(t, tags) for t in _text_blocks(content)]
+            texts = [t for t in texts if t and t != "(no content)"]
             if not texts:
                 continue
             if turn is None:
@@ -461,13 +464,16 @@ def _open_private(path: Path, flags: int):
     O_NOFOLLOW stops symlinks only, and the create mode applies only to new
     files, so the opened file is checked: ours, a regular file, one link.
     """
-    fd = os.open(path, flags | _PRIVATE_FLAGS | os.O_NONBLOCK, 0o600)  # a FIFO can't hang the open
+    truncate = flags & os.O_TRUNC  # only once the file is known to be ours alone
+    fd = os.open(path, (flags & ~os.O_TRUNC) | _PRIVATE_FLAGS | os.O_NONBLOCK, 0o600)  # a FIFO can't hang it
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
             raise ValueError(f"{path} is not a private regular file; refusing to write conversation text to it")
         if stat.S_IMODE(st.st_mode) != 0o600:
             os.fchmod(fd, 0o600)
+        if truncate:
+            os.ftruncate(fd, 0)
         os.set_blocking(fd, True)
         return fd
     except BaseException:

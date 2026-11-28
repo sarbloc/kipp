@@ -767,3 +767,24 @@ def test_a_cut_at_the_side_cap_leaves_no_key_fragment(monkeypatch):
     records = [user("u-01", "go"), assistant("a-01", text(pem[:19_980 - 30] + pem[-25:] + " " + token))]
     [t] = list(claude_code_turns(records, session_id="s"))
     assert "ZZZZ" not in t.assistant and "ghp_" not in t.assistant
+
+
+def test_a_hard_linked_cursor_tmp_is_refused_without_truncating(tmp_path):
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "q1"), assistant("a-01", text("r1")), user("u-02", "q2")])
+    cursor = capture._cursor_path("claude-code", "s")
+    cursor.parent.mkdir(parents=True, mode=0o700)
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    os.link(victim, cursor.with_suffix(".tmp"))
+
+    with pytest.raises(ValueError, match="private regular file"):
+        capture_transcript(t, session_id="s", config=CFG)
+    assert victim.read_text() == "keep me"
+
+
+def test_a_long_injected_block_is_stripped_before_the_side_cap(monkeypatch):
+    monkeypatch.setattr(capture, "MAX_SIDE_CHARS", 1000)
+    block = "<context>" + "c" * 5000 + "</context>The actual answer."
+    [t] = list(claude_code_turns([user("u-01", "go"), assistant("a-01", text(block))], session_id="s"))
+    assert t.assistant == "The actual answer."
