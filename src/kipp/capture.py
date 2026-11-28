@@ -163,6 +163,11 @@ def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS) -> str:
     out, i = [], 0
     for a, b in sorted(drops):
         out.append(text[i:a])
+        # A space where a block sat between two words, so dropping it can't
+        # glue text together (``check<context>x</context>ghp_...`` must not
+        # become ``checkghp_...``, which the redaction boundary would miss).
+        if a > 0 and b < len(text) and not text[a - 1].isspace() and not text[b].isspace():
+            out.append(" ")
         i = b
     out.append(text[i:])
     return re.sub(r"\n{3,}", "\n\n", "".join(out)).strip()

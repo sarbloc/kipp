@@ -817,3 +817,10 @@ def test_the_hook_gives_up_on_a_busy_lock(tmp_path, monkeypatch, capsys):
 
     assert run_hook(monkeypatch, payload) == 0
     assert [r["user"] for r in spooled()] == ["q1"]
+
+
+def test_stripping_a_block_cannot_glue_a_key_to_a_word():
+    key = "ghp_" + "A" * 36
+    assert strip_injected(f"check<context>x</context>{key}", ("context",)) == f"check {key}"
+    [t] = list(claude_code_turns([user("u-01", f"check<context>x</context>{key}")], session_id="s"))
+    assert t.user == "check [REDACTED]"
