@@ -174,7 +174,7 @@ def test_unknown_and_malformed_records_are_skipped():
         {"type": "assistant", "uuid": "a-07", "message": "a string"},
         {"type": "user", "uuid": 7, "message": {"content": "numeric uuid"}},
         {"type": "user", "uuid": "u-08", "cwd": ["x"], "timestamp": 5,
-         "message": {"content": [{"type": "text", "text": 12}, text("Odd fields.")]}},
+         "message": {"content": [{"type": "image"}, text("Odd fields.")]}},
         user("u-01", {"unexpected": "shape"}),
         user("u-02", "Kept."),
     ])
@@ -1133,3 +1133,28 @@ def test_a_malformed_record_gap_carries_over_to_the_next_run(tmp_path):
 
     texts = " ".join(r["text"] for r in spooled())
     assert "KEYBODY" not in texts and "q1" in texts
+
+
+@pytest.mark.parametrize("content", [
+    {"type": "text", "text": "-----BEGIN PRIVATE KEY-----"},
+    [{"type": "text", "text": 5}],
+    ["-----BEGIN PRIVATE KEY-----"],
+    None,
+])
+def test_unreadable_content_is_a_gap(content):
+    bad = assistant("a-01")
+    bad["message"]["content"] = content
+    records = [user("u-00", "q0"), assistant("a-00", text("before")), bad,
+               assistant("a-02", text("KEYBODY\n-----END PRIVATE KEY-----")),
+               user("u-01", "q1"), assistant("a-03", text("r1"))]
+    texts = " ".join(t.text for t in claude_code_turns(records, session_id="s"))
+    assert "KEYBODY" not in texts and "before" in texts and "r1" in texts
+
+
+def test_tool_only_messages_are_not_gaps():
+    records = [user("u-00", "q0"), assistant("a-00", text("one")),
+               assistant("a-01", {"type": "tool_use", "id": "t", "name": "x", "input": {}}),
+               user("r-01", [{"type": "tool_result", "tool_use_id": "t", "content": "ok"}]),
+               assistant("a-02", text("two"))]
+    [t] = list(claude_code_turns(records, session_id="s"))
+    assert t.assistant == "one\n\ntwo"

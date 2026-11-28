@@ -270,6 +270,16 @@ def _text_blocks(content) -> list[str]:
     return []
 
 
+def _readable_content(content) -> bool:
+    """Message content in a shape we understand: a string, or a list of
+    blocks whose text blocks carry string text. Anything else is a gap."""
+    if isinstance(content, str):
+        return True
+    return isinstance(content, list) and all(
+        isinstance(b, dict) and (b.get("type") != "text" or isinstance(b.get("text"), str))
+        for b in content)
+
+
 def _attachment_markers(content) -> list[str]:
     """``[image]``-style placeholders for a message with attachments but no text.
 
@@ -367,34 +377,33 @@ def claude_code_turns(
             cwd=t["cwd"] or cwd, user=user, assistant=assistant, offset=t["offset"],
         )
 
+    def close_at_gap() -> Turn | None:
+        # Content here wasn't read, so what follows may sit inside a block (a
+        # key, an injected tag) that opened in it. End the turn as cut and
+        # drop assistant text until the next user message.
+        nonlocal turn, mid_turn
+        done = None
+        if turn is not None:
+            turn["cut"] = True
+            done = finish(turn)
+        turn, mid_turn = None, True
+        return done
+
     for r in records:
         kind = r.get("type")
         if kind == GAP_RECORD:
-            # Content here wasn't read, so what follows may sit inside a block
-            # (a key, an injected tag) that opened in it. End the turn as cut
-            # and drop assistant text until the next user message.
-            if turn is not None:
-                turn["cut"] = True
-                done = finish(turn)
-                if done:
-                    yield done
-            turn, mid_turn = None, True
+            if done := close_at_gap():
+                yield done
             continue
         if kind not in ("user", "assistant") or any(r.get(f) for f in _SKIP_FLAGS):
             continue
         message = r.get("message")
         anchor = r.get("uuid")
-        if not isinstance(message, dict) or not _usable_id(anchor):
-            # Dialogue we can't read is a gap like a skipped line: it may have
-            # opened a block (a key) that the next record continues.
-            if turn is not None:
-                turn["cut"] = True
-                done = finish(turn)
-                if done:
-                    yield done
-            turn, mid_turn = None, True
+        content = message.get("content") if isinstance(message, dict) else None
+        if not _usable_id(anchor) or not _readable_content(content):
+            if done := close_at_gap():  # dialogue we can't read is a gap too
+                yield done
             continue
-        content = message.get("content")
         if kind == "user":
             # Only text blocks count, so a tool-result message opens no turn,
             # but prose sent alongside tool results still does.
