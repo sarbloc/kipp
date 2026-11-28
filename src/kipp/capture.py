@@ -29,6 +29,7 @@ import os
 import re
 import stat
 import sys
+import time
 import uuid
 from collections import Counter
 from dataclasses import asdict, dataclass
@@ -253,6 +254,17 @@ def _str(value) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _usable_id(value) -> bool:
+    """A non-empty string that encodes as UTF-8 (JSON can carry lone surrogates)."""
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def _new_turn(anchor: str, r: dict) -> dict:
     return {"anchor": anchor, "timestamp": _str(r.get("timestamp")), "cwd": _str(r.get("cwd")),
             "user": [], "assistant": [], "size": {"user": 0, "assistant": 0},
@@ -313,7 +325,7 @@ def claude_code_turns(
             continue
         message = r.get("message")
         anchor = r.get("uuid")
-        if not isinstance(message, dict) or not isinstance(anchor, str) or not anchor:
+        if not isinstance(message, dict) or not _usable_id(anchor):
             continue
         content = message.get("content")
         if kind == "user":
@@ -547,10 +559,31 @@ class _Lock:
     one spool, so captures are serialised.
     """
 
+    def __init__(self, timeout: float | None = None):
+        self._timeout = timeout
+
     def __enter__(self):
         self._f = os.fdopen(_open_private(ensure_state_dir() / "capture.lock", os.O_RDWR), "r+b")
-        fcntl.flock(self._f, fcntl.LOCK_EX)
+        try:
+            if self._timeout is None:
+                fcntl.flock(self._f, fcntl.LOCK_EX)
+            else:
+                self._acquire_within(self._timeout)
+        except BaseException:
+            self._f.close()
+            raise
         return self
+
+    def _acquire_within(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                fcntl.flock(self._f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"capture lock busy for {timeout:g}s") from None
+                time.sleep(0.05)
 
     def __exit__(self, *exc):
         fcntl.flock(self._f, fcntl.LOCK_UN)
@@ -628,13 +661,18 @@ class CaptureConfig:
 
 
 SPOOL_BATCH = 500
+HOOK_LOCK_TIMEOUT = 5.0  # seconds a hook waits for another capture before giving up
 
 
 def capture_transcript(
     transcript: Path, *, session_id: str, cwd: str = "", client: str = "claude-code",
-    config: CaptureConfig | None = None,
+    config: CaptureConfig | None = None, lock_timeout: float | None = None,
 ) -> int:
     """Append the turns added to ``transcript`` since the last capture to the spool.
+
+    ``lock_timeout`` bounds the wait for another capture to finish (the hook
+    passes one, so it never stalls the agent); on timeout nothing is spooled
+    and the next capture picks the turns up.
 
     Returns the number of turns spooled. The cursor advances only after the
     spool write succeeds, so a failure re-captures next time rather than
@@ -647,7 +685,7 @@ def capture_transcript(
     """
     config = config or CaptureConfig.load()
     adapter = ADAPTERS[client]
-    with _Lock(), open_transcript(transcript) as f:
+    with _Lock(lock_timeout), open_transcript(transcript) as f:
         offset = _read_cursor(client, session_id, transcript, f)
         reader = TranscriptReader(f, offset, str(transcript))
         starts: dict[str, int] = {}
@@ -705,11 +743,12 @@ def _run_hook(stdin_text: str) -> int:
     payload = json.loads(stdin_text)
     transcript = payload.get("transcript_path")
     session_id = payload.get("session_id")
-    if not transcript or not session_id:
-        log.error("hook payload missing transcript_path or session_id: keys=%s",
+    if not _usable_id(transcript) or not _usable_id(session_id):
+        log.error("hook payload missing a usable transcript_path or session_id: keys=%s",
                   sorted(payload))
         return 0
-    n = capture_transcript(Path(transcript), session_id=session_id, cwd=payload.get("cwd", ""))
+    n = capture_transcript(Path(transcript), session_id=session_id, cwd=payload.get("cwd", ""),
+                           lock_timeout=HOOK_LOCK_TIMEOUT)
     log.info("captured %d turns from %s (%s, %s)", n, transcript, session_id,
              payload.get("hook_event_name", "?"))
     return n

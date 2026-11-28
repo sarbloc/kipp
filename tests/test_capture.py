@@ -788,3 +788,32 @@ def test_a_long_injected_block_is_stripped_before_the_side_cap(monkeypatch):
     block = "<context>" + "c" * 5000 + "</context>The actual answer."
     [t] = list(claude_code_turns([user("u-01", "go"), assistant("a-01", text(block))], session_id="s"))
     assert t.assistant == "The actual answer."
+
+
+def test_an_unencodable_uuid_is_skipped_and_capture_continues(tmp_path):
+    t = tmp_path / "s.jsonl"
+    bad = json.dumps(user("u-00", "lost")).replace('"u-00"', '"\\ud800"')
+    t.write_text(bad + "\n" + "".join(json.dumps(r) + "\n" for r in
+                                      [user("u-01", "q1"), assistant("a-01", text("r1")), user("u-02", "q2")]))
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 2
+    assert [r["user"] for r in spooled()] == ["q1", "q2"]
+
+
+def test_the_hook_gives_up_on_a_busy_lock(tmp_path, monkeypatch, capsys):
+    import fcntl
+    monkeypatch.setattr(capture, "HOOK_LOCK_TIMEOUT", 0.2)
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "q1")])
+    lock = open(capture.ensure_state_dir() / "capture.lock", "a+b")
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    try:
+        payload = json.dumps({"transcript_path": str(t), "session_id": "s"})
+        assert run_hook(monkeypatch, payload) == 0
+    finally:
+        lock.close()
+    assert spooled() == []
+    assert "capture lock busy" in (capture.state_dir() / "capture.log").read_text()
+
+    assert run_hook(monkeypatch, payload) == 0
+    assert [r["user"] for r in spooled()] == ["q1"]
