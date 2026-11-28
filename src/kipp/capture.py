@@ -86,6 +86,8 @@ MAX_META_CHARS = 4096
 MAX_ID_CHARS = 256
 # Key the capture loop adds to each transcript record: its byte offset.
 OFFSET_KEY = "_kipp_offset"
+# Record type the capture loop sends the adapter when reading stopped early.
+CUT_RECORD = "_kipp_cut"
 # Redaction sees this much text past the clip point, so a key that starts
 # before the clip is matched whole. Longer than any single-line key.
 _REDACT_MARGIN = 1024
@@ -234,9 +236,10 @@ def clip(text: str, limit: int = CLIP_CHARS, hidden: int = 0) -> str:
     return f"{text[:limit]} [...clipped {cut} chars]" if cut else text
 
 
-def clean(text: str, tags: Iterable[str], dropped: int = 0) -> str:
-    """Strip, redact and clip; ``dropped`` counts chars already cut upstream."""
-    stripped = strip_injected(text, tags, truncated=dropped > 0)
+def clean(text: str, tags: Iterable[str], dropped: int = 0, cut: bool = False) -> str:
+    """Strip, redact and clip; ``dropped`` counts chars already cut upstream,
+    and ``cut`` says the text was cut short some other way."""
+    stripped = strip_injected(text, tags, truncated=cut or dropped > 0)
     # Redact a window reaching past the clip point, then clip, so a clip can't
     # cut a secret in half and leave a fragment the patterns miss. Redaction can
     # shrink the window (a long key becomes "[REDACTED]"), which would pull a
@@ -297,7 +300,7 @@ def _new_turn(anchor: str, r: dict) -> dict:
     offset = r.get(OFFSET_KEY)
     return {"anchor": anchor, "timestamp": _str(r.get("timestamp")), "cwd": _str(r.get("cwd")),
             "offset": offset if isinstance(offset, int) else None,
-            "user": [], "assistant": [], "size": {"user": 0, "assistant": 0},
+            "user": [], "assistant": [], "size": {"user": 0, "assistant": 0}, "cut": False,
             "dropped": {"user": 0, "assistant": 0}}
 
 
@@ -349,7 +352,7 @@ def claude_code_turns(
         if t is None:
             return None
         user = clean("\n\n".join(t["user"]), tags, t["dropped"]["user"])
-        assistant = clean("\n\n".join(t["assistant"]), tags, t["dropped"]["assistant"])
+        assistant = clean("\n\n".join(t["assistant"]), tags, t["dropped"]["assistant"], t["cut"])
         if not user and not assistant:
             return None
         return Turn(
@@ -360,6 +363,10 @@ def claude_code_turns(
 
     for r in records:
         kind = r.get("type")
+        if kind == CUT_RECORD:  # reading stopped here: the open turn may be incomplete
+            if turn is not None:
+                turn["cut"] = True
+            continue
         if kind not in ("user", "assistant") or any(r.get(f) for f in _SKIP_FLAGS):
             continue
         message = r.get("message")
@@ -370,8 +377,10 @@ def claude_code_turns(
         if kind == "user":
             # Only text blocks count, so a tool-result message opens no turn,
             # but prose sent alongside tool results still does.
-            texts = [strip_injected(t, tags) for t in _text_blocks(content)]
-            texts = [t for t in texts if t] or _attachment_markers(content)
+            # Stripped as one message, so a block whose tags sit in different
+            # text blocks still counts as injection only.
+            message_text = strip_injected("\n\n".join(_text_blocks(content)), tags)
+            texts = [message_text] if message_text else _attachment_markers(content)
             if not texts:
                 continue
             done = finish(turn)
@@ -797,6 +806,8 @@ def capture_transcript(
             for start, rec in reader:
                 rec[OFFSET_KEY] = start
                 yield rec
+            if reader.timed_out:
+                yield {"type": CUT_RECORD}
 
         # Spooled in batches, so a big backlog isn't held in memory. A failure
         # part-way leaves the cursor unmoved and the next run re-spools those

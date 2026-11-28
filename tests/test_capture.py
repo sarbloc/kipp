@@ -1025,3 +1025,26 @@ def test_skipping_an_oversized_line_keeps_its_progress_across_runs(tmp_path, mon
             break
     else:
         pytest.fail("capture never got past the oversized line")
+
+
+def test_an_injected_block_cut_by_the_time_budget_is_dropped(tmp_path, monkeypatch):
+    clock = iter(range(1_000_000))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(clock))
+    t = tmp_path / "s.jsonl"
+    records = [user("u-00", "q0"), assistant("a-00", text("Answer. <context>"))]
+    records += [assistant(f"a-{i:02d}", text(f"PRIVATE{i}")) for i in range(1, 12)]
+    records += [assistant("a-90", text("</context>")), user("u-01", "q1"), assistant("a-91", text("r1"))]
+    write(t, records)
+
+    for _ in range(30):
+        capture_transcript(t, session_id="s", config=CFG, time_budget=4)
+    texts = " ".join(r["text"] for r in spooled())
+    assert "PRIVATE" not in texts and "q1" in texts and "Answer." in texts
+
+
+def test_injection_split_across_user_text_blocks_opens_no_turn():
+    records = [user("u-01", "q"), assistant("a-01", text("part one")),
+               user("u-02", [text("<context>private"), text("</context>")]),
+               assistant("a-02", text("part two"))]
+    [t] = list(claude_code_turns(records, session_id="s"))
+    assert t.user == "q" and t.assistant == "part one\n\npart two"
