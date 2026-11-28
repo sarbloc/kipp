@@ -1249,3 +1249,14 @@ def test_dotdot_after_a_symlink_goes_up_from_its_target(tmp_path):
     seen = capture._traversed(tmp_path / "safe" / "link" / ".." / "state")
     assert tmp_path / "unsafe" / "state" in seen
     assert tmp_path / "safe" / "state" not in seen
+
+
+def test_an_open_turn_that_cleans_to_nothing_keeps_the_cursor(tmp_path):
+    t = tmp_path / "s.jsonl"
+    write(t, [assistant("a-00", text("<context>PRIVATE"))])
+    capture_transcript(t, session_id="s", config=CFG)
+    append(t, [assistant("a-01", text("MORE_PRIVATE</context>answer")), user("u-01", "q1")])
+    capture_transcript(t, session_id="s", config=CFG)
+
+    texts = " ".join(r["text"] for r in spooled())
+    assert "PRIVATE" not in texts and "answer" in texts and "q1" in texts

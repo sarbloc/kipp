@@ -362,7 +362,8 @@ def claude_code_turns(
     A ``GAP_RECORD`` (content that wasn't read), or a dialogue record too
     malformed to use, ends the open turn the same way. When the records run
     out, ``state["mid_turn"]`` (if given) says whether that's still the case,
-    for the cursor.
+    and ``state["open_offset"]`` where the turn still open starts, for the
+    cursor.
     """
     tags = tuple(tags)
     turn: dict | None = None
@@ -439,6 +440,9 @@ def claude_code_turns(
             _add(turn, "assistant", texts)
     if state is not None:
         state["mid_turn"] = mid_turn
+        # Where the open turn starts, even if it cleans down to nothing and
+        # isn't yielded: the next capture must resume there.
+        state["open_offset"] = turn["offset"] if turn is not None else None
     done = finish(turn)
     if done:
         yield done
@@ -915,6 +919,8 @@ def capture_transcript(
                 lines, size = [], 0
         if lines:
             _append_to_spool("".join(lines))
+        if state.get("open_offset") is not None:
+            resume = state["open_offset"]
         new_offset = resume if resume is not None else reader.end
         # With no turn to resume at, the cursor goes to the end of what was
         # read and must carry whether that's inside a turn or after a gap.
