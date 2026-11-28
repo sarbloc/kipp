@@ -100,6 +100,7 @@ kipp init
 |------|----------------|
 | [mcp-clients.md](https://github.com/sarbloc/kipp/blob/main/docs/mcp-clients.md) | Registering `kipp mcp` in Claude Code, Claude Desktop, Cursor, Codex CLI |
 | [agent-guide.md](https://github.com/sarbloc/kipp/blob/main/docs/agent-guide.md) | System-prompt section, tools, tags, domains, the extraction loop |
+| [capture.md](https://github.com/sarbloc/kipp/blob/main/docs/capture.md) | Recording Claude Code conversations as events: the hook, flush timer, extraction, privacy |
 | [operations.md](https://github.com/sarbloc/kipp/blob/main/docs/operations.md) | Configuration, expiry, compaction, backup and restore, systemd timers |
 | [CHANGELOG.md](https://github.com/sarbloc/kipp/blob/main/CHANGELOG.md) | What changed in each release |
 | [MEMORY-SYSTEM-SPEC.md](https://github.com/sarbloc/kipp/blob/main/MEMORY-SYSTEM-SPEC.md) | The original design spec |

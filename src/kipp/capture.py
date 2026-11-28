@@ -1009,6 +1009,18 @@ def _run_hook(stdin_text: str) -> int:
     return n
 
 
+CAPTURE_ENV = "KIPP_CAPTURE"
+
+
+def capture_disabled() -> bool:
+    """True when ``KIPP_CAPTURE`` opts this process out (``off``, ``0``, ``false``, ``no``).
+
+    Hooks inherit the agent's environment, so this excludes one session or a
+    whole agent harness without touching the hook config.
+    """
+    return os.environ.get(CAPTURE_ENV, "").strip().lower() in {"off", "0", "false", "no"}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="kipp-capture",
@@ -1022,6 +1034,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--session-id", help="Session id for --file (default: the file name).")
     parser.add_argument("--cwd", default="", help="Working directory for --file domain routing.")
     args = parser.parse_args(argv)
+    if args.hook and capture_disabled():
+        return 0  # before logging, so an opted-out process touches nothing
     _setup_logging(args.hook)
 
     if args.hook:

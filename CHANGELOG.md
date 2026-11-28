@@ -25,6 +25,15 @@ All notable changes to KIPP are recorded here. The format follows
   short cron. Hooks keep appending while it runs. `kipp stats` now reports
   captured turns not yet consolidated (they expire after 30 days like any
   event) and turns spooled but not flushed (#71).
+- `KIPP_CAPTURE=off` in an agent's environment turns the capture hook off for
+  that process: one private session, or an agent harness that loads user
+  hooks but writes its own memory (#71).
+- `contrib/kipp-extract.sh` flushes captured turns before extracting, and
+  runs `claude -p` with hooks disabled so it never captures itself. The
+  extraction prompt has a section on captured conversation turns (#71).
+- `docs/capture.md`: hook setup, domain routing, the flush timer
+  (`contrib/systemd/kipp-capture-flush.timer`), extraction sizing, and what
+  redaction does and doesn't cover (#71).
 - `kipp export --domain shared|dev|personal|all` (default `shared`). JSON
   records now carry a `domain` field, and markdown groups by domain when
   exporting several (#65).

@@ -63,6 +63,10 @@ Don't announce memory writes. Just make them.
 An agent that only uses `memory_store` works fine without an extraction pass.
 Events are for when you want capture to be cheap and filing to happen later.
 
+Agents still forget to write. To record conversations without relying on
+them, see [Capturing conversations](capture.md): a Claude Code hook turns
+every exchange into an event for the extraction pass.
+
 ### Tags
 
 An event that **opens** with `[type:id]`, with no spaces inside the brackets,
@@ -140,13 +144,16 @@ line if you use more than `shared`.
 
 ### Running it nightly with Claude Code
 
-[`contrib/kipp-extract.sh`](../contrib/kipp-extract.sh) runs the prompt with
+[`contrib/kipp-extract.sh`](../contrib/kipp-extract.sh) flushes any captured
+turns into events ([capture](capture.md)), then runs the prompt with
 `claude -p` and limits the agent to the KIPP tools:
 
 - `--strict-mcp-config` with its own `--mcp-config`, so none of the other MCP
   servers in your Claude Code config are loaded;
 - `--tools ""`, so there's no shell, file or web access;
-- `--allowedTools mcp__kipp`, so the KIPP calls run without prompting.
+- `--allowedTools mcp__kipp`, so the KIPP calls run without prompting;
+- `--settings '{"disableAllHooks": true}'`, so none of your hooks run,
+  including a capture hook that would record the pass itself.
 
 That matters because the agent reads raw event text, and an event can contain
 anything your agent captured, including text from web pages. The script

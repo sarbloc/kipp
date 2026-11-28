@@ -57,7 +57,7 @@ kipp oversized               # list entities over 30 current facts, all domains
 kipp split-plan ID -o p.json # group an entity's facts into topic entities
 kipp split-apply p.json      # move them (dry run; --apply to write)
 kipp compact                 # lossy: delete all but each entity's top 20 facts
-kipp stats                   # point count for every collection
+kipp stats                   # point count for every collection, plus the capture backlog
 kipp reindex                 # rebuild search vectors and fact points from stored facts
 ```
 
@@ -238,12 +238,13 @@ Collection names are listed in the backup's `manifest.json`.
 
 ## systemd timers
 
-`contrib/systemd/` has two user timers:
+`contrib/systemd/` has three user timers:
 
 | Timer | Runs |
 |-------|------|
 | `kipp-expire.timer` | `kipp expire --domain all`, daily at 03:30 |
 | `kipp-backup.timer` | `kipp backup`, daily at 04:45, after expiry |
+| `kipp-capture-flush.timer` | `kipp capture flush`, every 5 minutes; only useful with [capture](capture.md) |
 
 Install them from the repo checkout:
 
@@ -255,7 +256,7 @@ systemctl --user list-timers 'kipp-*'
 ```
 
 - **Binary path.** The units run `~/.local/bin/kipp`, where pipx puts it. If
-  yours is elsewhere, edit `ExecStart` in both `.service` files.
+  yours is elsewhere, edit `ExecStart` in the `.service` files.
 - **Environment.** If you set `QDRANT_URL` or `QDRANT_API_KEY`, put them in
   `~/.config/kipp/env` as `KEY=value` lines. The units read that file.
 - **Without a login session.** User timers only run while you're logged in,
