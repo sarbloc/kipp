@@ -1,0 +1,95 @@
+{
+  "model": "BAAI/bge-small-en-v1.5",
+  "unit": "round",
+  "max_seq_length": 512,
+  "questions": 470,
+  "rounds": 116728,
+  "unique_texts": 91580,
+  "truncated_share": 0.3941,
+  "metrics": {
+    "all": {
+      "n": 470.0,
+      "session_any@1": 0.8574468085106383,
+      "session_all@1": 0.2978723404255319,
+      "round_any@1": 0.46595744680851064,
+      "session_any@5": 0.9702127659574468,
+      "session_all@5": 0.8659574468085106,
+      "round_any@5": 0.8340425531914893,
+      "session_any@10": 0.9787234042553191,
+      "session_all@10": 0.9446808510638298,
+      "round_any@10": 0.9191489361702128
+    },
+    "knowledge-update": {
+      "n": 72.0,
+      "session_any@1": 0.9722222222222222,
+      "session_all@1": 0.0,
+      "round_any@1": 0.4305555555555556,
+      "session_any@5": 1.0,
+      "session_all@5": 0.9444444444444444,
+      "round_any@5": 0.9722222222222222,
+      "session_any@10": 1.0,
+      "session_all@10": 1.0,
+      "round_any@10": 1.0
+    },
+    "multi-session": {
+      "n": 121.0,
+      "session_any@1": 0.8512396694214877,
+      "session_all@1": 0.0,
+      "round_any@1": 0.38016528925619836,
+      "session_any@5": 0.9917355371900827,
+      "session_all@5": 0.7768595041322314,
+      "round_any@5": 0.8264462809917356,
+      "session_any@10": 1.0,
+      "session_all@10": 0.9338842975206612,
+      "round_any@10": 0.9256198347107438
+    },
+    "single-session-assistant": {
+      "n": 56.0,
+      "session_any@1": 0.9821428571428571,
+      "session_all@1": 0.9821428571428571,
+      "round_any@1": 0.75,
+      "session_any@5": 1.0,
+      "session_all@5": 1.0,
+      "round_any@5": 0.9464285714285714,
+      "session_any@10": 1.0,
+      "session_all@10": 1.0,
+      "round_any@10": 1.0
+    },
+    "single-session-preference": {
+      "n": 30.0,
+      "session_any@1": 0.6333333333333333,
+      "session_all@1": 0.6333333333333333,
+      "round_any@1": 0.5,
+      "session_any@5": 0.9333333333333333,
+      "session_all@5": 0.9333333333333333,
+      "round_any@5": 0.8,
+      "session_any@10": 0.9333333333333333,
+      "session_all@10": 0.9333333333333333,
+      "round_any@10": 0.8666666666666667
+    },
+    "single-session-user": {
+      "n": 64.0,
+      "session_any@1": 0.84375,
+      "session_all@1": 0.84375,
+      "round_any@1": 0.484375,
+      "session_any@5": 0.9375,
+      "session_all@5": 0.9375,
+      "round_any@5": 0.828125,
+      "session_any@10": 0.953125,
+      "session_all@10": 0.953125,
+      "round_any@10": 0.90625
+    },
+    "temporal-reasoning": {
+      "n": 127.0,
+      "session_any@1": 0.8031496062992126,
+      "session_all@1": 0.09448818897637795,
+      "round_any@1": 0.4251968503937008,
+      "session_any@5": 0.9448818897637795,
+      "session_all@5": 0.7952755905511811,
+      "round_any@5": 0.7244094488188977,
+      "session_any@10": 0.9606299212598425,
+      "session_all@10": 0.8976377952755905,
+      "round_any@10": 0.8503937007874016
+    }
+  }
+}

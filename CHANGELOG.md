@@ -7,6 +7,9 @@ All notable changes to KIPP are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- `bench/longmemeval/run_retrieval.py` and `docs/benchmarks.md`: LongMemEval
+  retrieval recall (no LLM) for MiniLM, bge-small and bge-base, on capture's
+  round text and on user messages alone.
 - `kipp-capture`, a Claude Code hook command that spools each conversation
   turn (the user's message and the assistant's prose) from the session
   transcript. Tool calls and output, thinking, subagent messages and injected
