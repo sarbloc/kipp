@@ -1197,3 +1197,33 @@ def test_a_symlink_chain_through_a_world_writable_dir_is_refused(tmp_path, monke
 
     with pytest.raises(ValueError, match="world-writable"):
         capture.ensure_state_dir()
+
+
+def test_an_intermediate_symlink_target_is_checked(tmp_path, monkeypatch):
+    shared, private = tmp_path / "shared", tmp_path / "private"
+    shared.mkdir()
+    private.mkdir()
+    os.chmod(shared, 0o777)
+    (shared / "back").symlink_to(private)
+    (tmp_path / "front").symlink_to(Path("shared") / "back")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "front" / "state"))
+
+    with pytest.raises(ValueError, match="world-writable"):
+        capture.ensure_state_dir()
+
+
+def test_a_relative_symlink_with_dotdot_resolves_correctly(tmp_path):
+    (tmp_path / "a" / "b").mkdir(parents=True)
+    (tmp_path / "c" / "x").mkdir(parents=True)
+    (tmp_path / "a" / "b" / "up").symlink_to(Path("..") / ".." / "c")
+    seen = capture._traversed(tmp_path / "a" / "b" / "up" / "x")
+    assert tmp_path / "c" / "x" in seen and tmp_path / "c" in seen
+
+
+def test_a_partial_closing_record_marks_the_turn_cut(tmp_path):
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-00", "q0"), assistant("a-00", text("Answer <context>PRIVATE"))],
+          partial=json.dumps(assistant("a-01", text("</context> more")))[:40])
+
+    capture_transcript(t, session_id="s", config=CFG)
+    assert "PRIVATE" not in spooled()[-1]["text"]

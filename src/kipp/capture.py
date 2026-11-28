@@ -31,7 +31,7 @@ import stat
 import sys
 import time
 import uuid
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +89,9 @@ OFFSET_KEY = "_kipp_offset"
 # Record type standing in for transcript content that wasn't read: a skipped
 # line, or the rest of the file when the time budget ran out.
 GAP_RECORD = "_kipp_gap"
+# Record type for "the open turn continues in a line not written yet": its
+# text so far is treated as cut short, but the turn isn't ended.
+CUT_RECORD = "_kipp_cut"
 # Redaction sees this much text past the clip point, so a key that starts
 # before the clip is matched whole. Longer than any single-line key.
 _REDACT_MARGIN = 1024
@@ -395,6 +398,10 @@ def claude_code_turns(
             if done := close_at_gap():
                 yield done
             continue
+        if kind == CUT_RECORD:
+            if turn is not None:
+                turn["cut"] = True
+            continue
         if kind not in ("user", "assistant") or any(r.get(f) for f in _SKIP_FLAGS):
             continue
         message = r.get("message")
@@ -471,6 +478,7 @@ class TranscriptReader:
     def __init__(self, f, offset: int, name: str = "transcript", deadline: float | None = None):
         self._f, self.end, self._name, self._deadline = f, offset, name, deadline
         self.timed_out = False
+        self.partial = False  # stopped at a line still being written
 
     def _out_of_time(self) -> bool:
         if self._deadline is None or time.monotonic() < self._deadline:
@@ -487,11 +495,13 @@ class TranscriptReader:
             start = self.end
             if not line.endswith(b"\n"):
                 if len(line) <= MAX_LINE_BYTES:
+                    self.partial = True
                     return  # partial last line
                 length, complete = self._skip_rest(len(line))
                 if not complete:
                     if self.timed_out:  # keep the progress; the next run skips on from here
                         self.end += length
+                    self.partial = True
                     return  # else oversized and still being written
                 self.end += length
                 log.warning("skipping a %d-byte transcript line at byte %d in %s",
@@ -558,13 +568,7 @@ def ensure_state_dir() -> Path:
     base = d.parent.parent
     base.mkdir(parents=True, exist_ok=True)
     _owned_dir(base, mine=False)
-    # Every prefix as written and as resolved, with all its parents, so a
-    # symlink chain can't route the path through an unchecked directory.
-    chain: set[Path] = set()
-    for prefix in (base, *base.parents):
-        real = Path(os.path.realpath(prefix))
-        chain.update((prefix, real, *real.parents))
-    for ancestor in chain:
+    for ancestor in _traversed(base):
         for st in (os.lstat(ancestor), os.stat(ancestor)):  # a symlink itself, then its target
             if st.st_uid not in (os.getuid(), 0):
                 raise ValueError(f"{ancestor} is owned by uid {st.st_uid}; refusing to write "
@@ -580,6 +584,40 @@ def ensure_state_dir() -> Path:
         level.mkdir(exist_ok=True, mode=0o700)
         _private_dir(level)
     return d
+
+
+_MAX_SYMLINKS = 40
+
+
+def _traversed(path: Path) -> set[Path]:
+    """Every directory and symlink that resolving ``path`` passes through,
+    following each link step by step (``realpath`` would skip the
+    intermediate targets of a chain)."""
+    cur, seen, links = Path("/"), {Path("/")}, 0
+    parts = deque(Path(os.path.abspath(path)).parts[1:])
+    while parts:
+        name = parts.popleft()
+        if name in ("", "."):
+            continue
+        if name == "..":
+            cur = cur.parent
+            seen.add(cur)
+            continue
+        nxt = cur / name
+        seen.add(nxt)
+        if stat.S_ISLNK(os.lstat(nxt).st_mode):
+            links += 1
+            if links > _MAX_SYMLINKS:
+                raise ValueError(f"too many symlinks resolving {path}")
+            target = Path(os.readlink(nxt))
+            if target.is_absolute():
+                cur = Path("/")
+                parts.extendleft(reversed(target.parts[1:]))
+            else:
+                parts.extendleft(reversed(target.parts))
+            continue
+        cur = nxt
+    return seen
 
 
 def _private_dir(path: Path) -> None:
@@ -859,6 +897,8 @@ def capture_transcript(
                 yield rec
             if reader.timed_out:
                 yield {"type": GAP_RECORD}
+            elif reader.partial:
+                yield {"type": CUT_RECORD}
 
         # Spooled in batches, so a big backlog isn't held in memory. A failure
         # part-way leaves the cursor unmoved and the next run re-spools those
