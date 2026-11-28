@@ -452,8 +452,22 @@ _PRIVATE_FLAGS = os.O_CREAT | os.O_NOFOLLOW
 
 
 def _open_private(path: Path, flags: int):
-    """Open a state file 0600, refusing a symlink planted in its place."""
-    return os.open(path, flags | _PRIVATE_FLAGS, 0o600)
+    """Open a state file 0600, refusing a symlink or hard link planted in its place.
+
+    O_NOFOLLOW stops symlinks only, and the create mode applies only to new
+    files, so the opened file is checked: ours, a regular file, one link.
+    """
+    fd = os.open(path, flags | _PRIVATE_FLAGS, 0o600)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
+            raise ValueError(f"{path} is not a private regular file; refusing to write conversation text to it")
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            os.fchmod(fd, 0o600)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def spool_path() -> Path:

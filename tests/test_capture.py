@@ -720,3 +720,27 @@ def test_hook_exits_0_on_a_world_writable_state_base(tmp_path, monkeypatch, caps
 
     assert run_hook(monkeypatch, "{}") == 0
     assert "world-writable" in capsys.readouterr().err
+
+
+def test_a_hard_linked_spool_is_refused(tmp_path):
+    capture.ensure_state_dir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("")
+    os.link(outside, spool_path())
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "private prose")])
+
+    with pytest.raises(ValueError, match="private regular file"):
+        capture_transcript(t, session_id="s", config=CFG)
+    assert outside.read_text() == ""
+
+
+def test_an_existing_loose_spool_is_made_private(tmp_path):
+    capture.ensure_state_dir()
+    spool_path().write_text("")
+    os.chmod(spool_path(), 0o666)
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "hi")])
+
+    capture_transcript(t, session_id="s", config=CFG)
+    assert stat.S_IMODE(os.stat(spool_path()).st_mode) == 0o600
