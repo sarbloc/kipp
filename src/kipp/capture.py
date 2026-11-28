@@ -334,6 +334,7 @@ def _add(turn: dict, side: str, texts: list[str]) -> None:
 def claude_code_turns(
     records: Iterable[dict], *, session_id: str, cwd: str = "",
     tags: Iterable[str] = DEFAULT_STRIP_TAGS, mid_turn: bool = False,
+    state: dict | None = None,
 ) -> Iterator[Turn]:
     """Group Claude Code transcript records into turns.
 
@@ -345,7 +346,10 @@ def claude_code_turns(
 
     ``mid_turn`` means the records start part-way through a turn: assistant
     text before the first user message is dropped, not captured unprompted.
-    A ``GAP_RECORD`` (content that wasn't read) ends the open turn the same way.
+    A ``GAP_RECORD`` (content that wasn't read), or a dialogue record too
+    malformed to use, ends the open turn the same way. When the records run
+    out, ``state["mid_turn"]`` (if given) says whether that's still the case,
+    for the cursor.
     """
     tags = tuple(tags)
     turn: dict | None = None
@@ -403,7 +407,7 @@ def claude_code_turns(
             done = finish(turn)
             if done:
                 yield done
-            turn = _new_turn(anchor, r)
+            turn, mid_turn = _new_turn(anchor, r), False
             _add(turn, "user", texts)
         else:
             # Stripped per block, like the user side, so the side cap can't cut
@@ -417,6 +421,8 @@ def claude_code_turns(
                     continue
                 turn = _new_turn(anchor, r)
             _add(turn, "assistant", texts)
+    if state is not None:
+        state["mid_turn"] = mid_turn
     done = finish(turn)
     if done:
         yield done
@@ -825,14 +831,13 @@ def capture_transcript(
         offset, mid_turn = _read_cursor(client, session_id, transcript, f)
         deadline = None if time_budget is None else time.monotonic() + time_budget
         reader = TranscriptReader(f, offset, str(transcript), deadline)
-        gaps = [False]  # whether a skipped line went past
+        state: dict = {}
 
         def records() -> Iterator[dict]:
             # Each record carries its start offset, which the adapter copies
             # onto the turn it opens, to place the cursor.
             for start, rec in reader:
                 rec[OFFSET_KEY] = start
-                gaps[0] |= rec.get("type") == GAP_RECORD
                 yield rec
             if reader.timed_out:
                 yield {"type": GAP_RECORD}
@@ -842,7 +847,7 @@ def capture_transcript(
         # turns under the same ids, which the flush deduplicates.
         count, resume, lines, size = 0, None, [], 0
         for t in adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags,
-                         mid_turn=mid_turn):
+                         mid_turn=mid_turn, state=state):
             t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
             lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
             size += len(lines[-1])
@@ -855,8 +860,9 @@ def capture_transcript(
         if lines:
             _append_to_spool("".join(lines))
         new_offset = resume if resume is not None else reader.end
-        # Still inside a turn (or after a gap) until a turn is seen to start.
-        new_mid_turn = (mid_turn or gaps[0]) and resume is None
+        # With no turn to resume at, the cursor goes to the end of what was
+        # read and must carry whether that's inside a turn or after a gap.
+        new_mid_turn = resume is None and state.get("mid_turn", mid_turn)
         if reader.timed_out and new_offset == offset and reader.end > offset:
             # One turn outran the whole budget: resuming at its start would
             # never get further. Move on, and drop the rest of that turn next

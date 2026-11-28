@@ -1122,3 +1122,14 @@ def test_a_parse_memory_error_is_skipped(tmp_path, monkeypatch):
     t = tmp_path / "s.jsonl"
     write(t, [{"type": "progress", "huge": []}, user("u-01", "q1")])
     assert capture_transcript(t, session_id="s", config=CFG) == 1
+
+
+def test_a_malformed_record_gap_carries_over_to_the_next_run(tmp_path):
+    t = tmp_path / "s.jsonl"
+    write(t, [{**assistant("a-01", text("-----BEGIN PRIVATE KEY-----")), "uuid": None}])
+    capture_transcript(t, session_id="s", config=CFG)
+    append(t, [assistant("a-02", text("KEYBODY\n-----END PRIVATE KEY-----")), user("u-01", "q1")])
+    capture_transcript(t, session_id="s", config=CFG)
+
+    texts = " ".join(r["text"] for r in spooled())
+    assert "KEYBODY" not in texts and "q1" in texts
