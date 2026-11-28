@@ -607,3 +607,116 @@ def test_symlinked_state_dir_is_refused(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="symlink"):
         capture.ensure_state_dir()
+
+
+# --- security pass 2 -------------------------------------------------------------
+
+
+def test_a_bearer_token_containing_another_key_is_redacted_whole():
+    token = "Bearer head.sk-" + "A" * 30 + "." + "S" * 2000
+    assert redact(f"auth: {token} end") == "auth: [REDACTED] end"
+
+
+def test_overlapping_secret_matches_merge():
+    out = redact("x Bearer ghp_" + "a" * 40 + " and sk-" + "b" * 25)
+    assert out == "x [REDACTED] and [REDACTED]"
+
+
+def test_a_long_assistant_run_is_capped_and_counted(monkeypatch):
+    monkeypatch.setattr(capture, "MAX_SIDE_CHARS", 10_000)
+    records = [user("u-01", "go")] + [assistant(f"a-{i:04d}", text("y" * 1000)) for i in range(50)]
+    [t] = list(claude_code_turns(records, session_id="s"))
+    # 10 blocks kept (joined with "\n\n"), 40 dropped before cleaning; both counted.
+    total = (10 * 1000 + 9 * 2) + 40 * 1000
+    assert t.assistant.endswith(f" [...clipped {total - capture.CLIP_CHARS} chars]")
+
+
+def test_turns_are_spooled_in_batches(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "SPOOL_BATCH", 3)
+    writes = []
+    real = capture._append_to_spool
+    monkeypatch.setattr(capture, "_append_to_spool", lambda data: (writes.append(data), real(data)))
+    t = tmp_path / "s.jsonl"
+    records = []
+    for i in range(7):
+        records += [user(f"u-{i:02d}", f"q{i}"), assistant(f"a-{i:02d}", text(f"r{i}"))]
+    write(t, records)
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 7
+    assert [w.count("\n") for w in writes] == [3, 3, 1]
+    assert [r["user"] for r in spooled()] == [f"q{i}" for i in range(7)]
+
+
+def test_a_failed_batch_leaves_the_cursor_unmoved(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "SPOOL_BATCH", 2)
+    t = tmp_path / "s.jsonl"
+    records = []
+    for i in range(5):
+        records += [user(f"u-{i:02d}", f"q{i}"), assistant(f"a-{i:02d}", text(f"r{i}"))]
+    write(t, records)
+    real, calls = capture._append_to_spool, []
+
+    def flaky(data):
+        calls.append(data)
+        if len(calls) == 2:
+            raise OSError("disk full")
+        real(data)
+
+    monkeypatch.setattr(capture, "_append_to_spool", flaky)
+    with pytest.raises(OSError):
+        capture_transcript(t, session_id="s", config=CFG)
+    monkeypatch.setattr(capture, "_append_to_spool", real)
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 5
+    assert sorted({r["user"] for r in spooled()}) == [f"q{i}" for i in range(5)]
+
+
+def test_a_group_writable_kipp_dir_is_tightened(tmp_path, monkeypatch):
+    base = tmp_path / "st"
+    (base / "kipp").mkdir(parents=True)
+    os.chmod(base / "kipp", 0o777)
+    monkeypatch.setenv("XDG_STATE_HOME", str(base))
+
+    d = capture.ensure_state_dir()
+    assert stat.S_IMODE(os.stat(base / "kipp").st_mode) == 0o755
+    assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
+
+
+def test_a_world_writable_state_base_is_refused(tmp_path, monkeypatch):
+    base = tmp_path / "st"
+    base.mkdir()
+    os.chmod(base, 0o777)
+    monkeypatch.setenv("XDG_STATE_HOME", str(base))
+
+    with pytest.raises(ValueError, match="world-writable"):
+        capture.ensure_state_dir()
+
+
+def test_a_sticky_world_writable_base_is_allowed(tmp_path, monkeypatch):
+    base = tmp_path / "st"
+    base.mkdir()
+    os.chmod(base, 0o1777)
+    monkeypatch.setenv("XDG_STATE_HOME", str(base))
+
+    assert capture.ensure_state_dir() == base / "kipp" / "capture"
+
+
+def test_a_kipp_dir_that_is_a_symlink_is_refused(tmp_path, monkeypatch):
+    base = tmp_path / "st"
+    base.mkdir()
+    (tmp_path / "elsewhere").mkdir()
+    (base / "kipp").symlink_to(tmp_path / "elsewhere")
+    monkeypatch.setenv("XDG_STATE_HOME", str(base))
+
+    with pytest.raises(ValueError, match="symlink"):
+        capture.ensure_state_dir()
+
+
+def test_hook_exits_0_on_a_world_writable_state_base(tmp_path, monkeypatch, capsys):
+    base = tmp_path / "st"
+    base.mkdir()
+    os.chmod(base, 0o777)
+    monkeypatch.setenv("XDG_STATE_HOME", str(base))
+
+    assert run_hook(monkeypatch, "{}") == 0
+    assert "world-writable" in capsys.readouterr().err

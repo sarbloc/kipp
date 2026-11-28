@@ -81,6 +81,10 @@ REDACTED = "[REDACTED]"
 # Redaction sees this much text past the clip point, so a key that starts
 # before the clip is matched whole. Longer than any single-line key.
 _REDACT_MARGIN = 1024
+# Raw text kept per side of a turn before cleaning. Far past the clip, so
+# stripping and redaction still see whole blocks and keys; caps memory when an
+# assistant reply runs to thousands of records.
+MAX_SIDE_CHARS = 1 << 20
 # A transcript line longer than this is skipped unread, so one huge tool
 # output can't exhaust memory. Dialogue is clipped far below it anyway.
 MAX_LINE_BYTES = 16 << 20
@@ -178,10 +182,21 @@ def _redact_pem(text: str) -> str:
 
 
 def redact(text: str) -> str:
+    """Replace secrets. Every pattern matches the same text and overlapping
+    matches merge, so one pattern's replacement can't break another's match
+    (``Bearer x.sk-...`` is redacted whole, not just its ``sk-`` part)."""
     text = _redact_pem(text)
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub(REDACTED, text)
-    return text
+    spans = sorted(m.span() for pattern in _SECRET_PATTERNS for m in pattern.finditer(text))
+    out, i = [], 0
+    for a, b in spans:
+        if b <= i:
+            continue
+        if a >= i:
+            out.append(text[i:a])
+            out.append(REDACTED)
+        i = b
+    out.append(text[i:])
+    return "".join(out)
 
 
 def clip(text: str, limit: int = CLIP_CHARS, hidden: int = 0) -> str:
@@ -190,7 +205,8 @@ def clip(text: str, limit: int = CLIP_CHARS, hidden: int = 0) -> str:
     return f"{text[:limit]} [...clipped {cut} chars]" if cut else text
 
 
-def clean(text: str, tags: Iterable[str]) -> str:
+def clean(text: str, tags: Iterable[str], dropped: int = 0) -> str:
+    """Strip, redact and clip; ``dropped`` counts chars already cut upstream."""
     stripped = strip_injected(text, tags)
     # Redact a window reaching past the clip point, then clip, so a clip can't
     # cut a secret in half and leave a fragment the patterns miss. Redaction can
@@ -206,7 +222,7 @@ def clean(text: str, tags: Iterable[str]) -> str:
         if len(red) >= need or size >= len(stripped):
             break
         size *= 2
-    return clip(red, hidden=len(stripped) - len(window))
+    return clip(red, hidden=len(stripped) - len(window) + dropped)
 
 
 # --- Claude Code transcripts ---------------------------------------------------
@@ -237,6 +253,28 @@ def _str(value) -> str:
     return value if isinstance(value, str) else ""
 
 
+def _new_turn(anchor: str, r: dict) -> dict:
+    return {"anchor": anchor, "timestamp": _str(r.get("timestamp")), "cwd": _str(r.get("cwd")),
+            "user": [], "assistant": [], "size": {"user": 0, "assistant": 0},
+            "dropped": {"user": 0, "assistant": 0}}
+
+
+def _add(turn: dict, side: str, texts: list[str]) -> None:
+    """Append text to one side of a turn, keeping at most ``MAX_SIDE_CHARS``.
+
+    A long run of assistant records would otherwise pile up in memory only to
+    be clipped to ``CLIP_CHARS``. The cut is counted in the clip marker.
+    """
+    for t in texts:
+        room = MAX_SIDE_CHARS - turn["size"][side]
+        if room <= 0:
+            turn["dropped"][side] += len(t)
+            continue
+        turn[side].append(t[:room])
+        turn["size"][side] += min(len(t), room)
+        turn["dropped"][side] += max(0, len(t) - room)
+
+
 def claude_code_turns(
     records: Iterable[dict], *, session_id: str, cwd: str = "",
     tags: Iterable[str] = DEFAULT_STRIP_TAGS,
@@ -255,8 +293,8 @@ def claude_code_turns(
     def finish(t: dict | None) -> Turn | None:
         if t is None:
             return None
-        user = clean("\n\n".join(t["user"]), tags)
-        assistant = clean("\n\n".join(t["assistant"]), tags)
+        user = clean("\n\n".join(t["user"]), tags, t["dropped"]["user"])
+        assistant = clean("\n\n".join(t["assistant"]), tags, t["dropped"]["assistant"])
         if not user and not assistant:
             return None
         return Turn(
@@ -284,16 +322,15 @@ def claude_code_turns(
             done = finish(turn)
             if done:
                 yield done
-            turn = {"anchor": anchor, "timestamp": _str(r.get("timestamp")),
-                    "cwd": _str(r.get("cwd")), "user": texts, "assistant": []}
+            turn = _new_turn(anchor, r)
+            _add(turn, "user", texts)
         else:
             texts = [t for t in _text_blocks(content) if t.strip() and t.strip() != "(no content)"]
             if not texts:
                 continue
             if turn is None:
-                turn = {"anchor": anchor, "timestamp": _str(r.get("timestamp")),
-                        "cwd": _str(r.get("cwd")), "user": [], "assistant": []}
-            turn["assistant"].extend(texts)
+                turn = _new_turn(anchor, r)
+            _add(turn, "assistant", texts)
     done = finish(turn)
     if done:
         yield done
@@ -378,12 +415,35 @@ def state_dir() -> Path:
     return base / "kipp" / "capture"
 
 
+def _owned_dir(path: Path, *, mine: bool) -> os.stat_result:
+    """lstat ``path``, refusing a symlink, a non-directory, or another user's directory."""
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise ValueError(f"{path} is a symlink or not a directory; refusing to write conversation text there")
+    if st.st_uid != os.getuid() and (mine or st.st_uid != 0):
+        raise ValueError(f"{path} is owned by uid {st.st_uid}; refusing to write conversation text there")
+    return st
+
+
 def ensure_state_dir() -> Path:
-    """Create the capture directory, private to the user: it holds conversation text."""
+    """Create the capture directory, private to the user: it holds conversation text.
+
+    No other user may be able to swap a directory on the path between these
+    checks and the writes: ``capture`` and ``kipp`` must be ours and lose any
+    group/other write bit, and the state base must be ours or root's and not
+    world-writable, unless sticky (like /tmp, where others can't rename our
+    entries). A group-writable base is allowed: with umask 002 that's the
+    user's own private group.
+    """
     d = state_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    if d.is_symlink():
-        raise ValueError(f"{d} is a symlink; refusing to write conversation text through it")
+    base = _owned_dir(d.parent.parent, mine=False)
+    if base.st_mode & stat.S_IWOTH and not base.st_mode & stat.S_ISVTX:
+        raise ValueError(f"{d.parent.parent} is world-writable; refusing to write conversation text there")
+    kipp = _owned_dir(d.parent, mine=True)
+    if kipp.st_mode & 0o022:
+        os.chmod(d.parent, stat.S_IMODE(kipp.st_mode) & ~0o022)
+    _owned_dir(d, mine=True)
     os.chmod(d, 0o700)  # mkdir's mode is masked by umask and skipped if it exists
     return d
 
@@ -542,6 +602,9 @@ class CaptureConfig:
 # --- the capture operation -------------------------------------------------------
 
 
+SPOOL_BATCH = 500
+
+
 def capture_transcript(
     transcript: Path, *, session_id: str, cwd: str = "", client: str = "claude-code",
     config: CaptureConfig | None = None,
@@ -572,17 +635,23 @@ def capture_transcript(
                     starts[rec["uuid"]] = start
                 yield rec
 
-        turns = list(adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags))
-        new_offset = starts[turns[-1].anchor] if turns else reader.end
-        if turns:
-            lines = []
-            for t in turns:
-                t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
-                lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
+        # Spooled in batches, so a big backlog isn't held in memory. A failure
+        # part-way leaves the cursor unmoved and the next run re-spools those
+        # turns under the same ids, which the flush deduplicates.
+        count, last, lines = 0, None, []
+        for t in adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags):
+            t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
+            lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
+            count, last = count + 1, t.anchor
+            if len(lines) >= SPOOL_BATCH:
+                _append_to_spool("".join(lines))
+                lines = []
+        if lines:
             _append_to_spool("".join(lines))
+        new_offset = starts[last] if last is not None else reader.end
         if new_offset != offset:
             _write_cursor(client, session_id, transcript, f, new_offset)
-    return len(turns)
+    return count
 
 
 # --- entry point -----------------------------------------------------------------
