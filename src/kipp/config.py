@@ -13,6 +13,9 @@ from pathlib import Path
 
 DOMAINS = ["shared", "dev", "personal"]
 
+# Days an event lives before `kipp expire` deletes it.
+EVENT_TTL_DAYS = 30
+
 
 def _xdg_config_home() -> Path:
     """Base config dir per the XDG spec.

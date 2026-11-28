@@ -26,6 +26,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     FilterSelector,
+    MatchAny,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -374,6 +375,88 @@ def store_event(
     client.upsert(collection_name=collection_name(domain, "events"), points=[point])
 
 
+def retired_events(client: QdrantClient, event_ids: list[str], *, domain: str) -> dict[str, bool]:
+    """For each of ``event_ids`` that exists in the domain's events: retired, never resolved?
+
+    Retired means a capture flush replaced it (``superseded_by``); a resolved
+    event (``mark_event_extracted``) counts as handled whatever else happened.
+    """
+    points = client.retrieve(
+        collection_name=collection_name(domain, "events"), ids=event_ids,
+        with_payload=["superseded_by", "resolved"], with_vectors=False,
+    )
+    return {
+        str(p.id): bool((p.payload or {}).get("superseded_by")) and not (p.payload or {}).get("resolved")
+        for p in points
+    }
+
+
+def requeue_events(client: QdrantClient, event_ids: list[str], *, domain: str) -> None:
+    """Put retired events back in the consolidation queue (unextracted, no ``superseded_by``)."""
+    if not event_ids:
+        return
+    coll = collection_name(domain, "events")
+    client.set_payload(collection_name=coll, payload={"extracted": False}, points=event_ids)
+    client.delete_payload(collection_name=coll, keys=["superseded_by"], points=event_ids)
+
+
+def unextracted_event_ids_by(
+    client: QdrantClient, key: str, values: list[str], *, domain: str,
+) -> list[tuple[str, str]]:
+    """``(event id, value)`` for unextracted events whose payload ``key`` is in ``values``."""
+    flt = Filter(must=[
+        FieldCondition(key=key, match=MatchAny(any=values)),
+        FieldCondition(key="extracted", match=MatchValue(value=False)),
+    ])
+    found, offset = [], None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection_name(domain, "events"), scroll_filter=flt,
+            limit=256, offset=offset, with_payload=[key], with_vectors=False,
+        )
+        found += [(str(p.id), (p.payload or {}).get(key)) for p in points]
+        if offset is None:
+            return found
+
+
+def upsert_event_points(client: QdrantClient, points: list[PointStruct], *, domain: str) -> None:
+    """Write already-built event points (id, vector, payload) in one request."""
+    client.upsert(collection_name=collection_name(domain, "events"), points=points)
+
+
+def mark_events_superseded(client: QdrantClient, superseded: dict[str, str], *, domain: str) -> None:
+    """Retire unextracted events replaced by a newer version: ``{old id: new id}``.
+
+    They're marked extracted (so consolidation skips them) with
+    ``superseded_by``; nothing is deleted, so a consolidator resolving an old
+    id it already read still finds it.
+    """
+    for old, new in superseded.items():
+        client.set_payload(
+            collection_name=collection_name(domain, "events"),
+            payload={"extracted": True, "superseded_by": new}, points=[old],
+        )
+
+
+def count_events(
+    client: QdrantClient, *, domain: str, source: str | None = None,
+    extracted: bool | None = None,
+) -> int:
+    """Count a domain's events, optionally by ``source`` and ``extracted``."""
+    coll = collection_name(domain, "events")
+    if not client.collection_exists(coll):
+        return 0
+    conditions = []
+    if source is not None:
+        conditions.append(FieldCondition(key="source", match=MatchValue(value=source)))
+    if extracted is not None:
+        conditions.append(FieldCondition(key="extracted", match=MatchValue(value=extracted)))
+    return client.count(
+        collection_name=coll, count_filter=Filter(must=conditions) if conditions else None,
+        exact=True,
+    ).count
+
+
 def get_unextracted_events(
     client: QdrantClient, since: datetime | None = None, *, domain: str = "shared",
 ) -> list[dict]:
@@ -414,9 +497,10 @@ def mark_event_extracted(
 
     If ``resolved_into`` is given, also records which entity the event fed
     (provenance) on the event payload, so a resolved event points at the
-    entity created/updated from it.
+    entity created/updated from it. ``resolved`` tells an event a consolidator
+    handled apart from one the capture flush retired (also ``extracted``).
     """
-    payload: dict = {"extracted": True}
+    payload: dict = {"extracted": True, "resolved": True}
     if resolved_into is not None:
         payload["resolved_into"] = resolved_into
     client.set_payload(

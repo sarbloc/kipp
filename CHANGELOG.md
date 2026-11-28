@@ -15,7 +15,16 @@ All notable changes to KIPP are recorded here. The format follows
   most 10 seconds per run (a backlog is caught up over several), never
   imports Qdrant or the model, and always exits 0 in hook mode. The spool and
   its state live in `$XDG_STATE_HOME/kipp/capture`, private to the user.
-  Flushing the spool into events comes next (#71).
+- `kipp capture flush` embeds the spool into each turn's domain's events
+  (`source="capture"`). Each text of a turn is its own event, so a turn
+  already stored unchanged is skipped, and an updated turn is queued as a new
+  event, retiring an older version not yet consolidated (and requeueing a
+  retired version that a rewound transcript makes current again). Events are never
+  rewritten, so resolving one acknowledges exactly the text that was read.
+  An empty spool exits without loading the model, so it's cheap on a
+  short cron. Hooks keep appending while it runs. `kipp stats` now reports
+  captured turns not yet consolidated (they expire after 30 days like any
+  event) and turns spooled but not flushed (#71).
 - `kipp export --domain shared|dev|personal|all` (default `shared`). JSON
   records now carry a `domain` field, and markdown groups by domain when
   exporting several (#65).
