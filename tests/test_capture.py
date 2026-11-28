@@ -391,6 +391,7 @@ def test_undecodable_and_broken_lines_are_skipped(tmp_path):
 def test_partial_spool_record_is_cut_before_appending(tmp_path):
     capture.ensure_state_dir()
     spool_path().write_text('{"id": "old", "text": "complete"}\n{"id": "half", "te')
+    os.chmod(spool_path(), 0o600)
     t = tmp_path / "s1.jsonl"
     write(t, [user("u-01", "Ask.")])
 
@@ -735,15 +736,24 @@ def test_a_hard_linked_spool_is_refused(tmp_path):
     assert outside.read_text() == ""
 
 
-def test_an_existing_loose_spool_is_made_private(tmp_path):
+def test_an_existing_loose_spool_is_refused(tmp_path):
     capture.ensure_state_dir()
     spool_path().write_text("")
-    os.chmod(spool_path(), 0o666)
+    os.chmod(spool_path(), 0o644)
     t = tmp_path / "s.jsonl"
     write(t, [user("u-01", "hi")])
 
-    capture_transcript(t, session_id="s", config=CFG)
-    assert stat.S_IMODE(os.stat(spool_path()).st_mode) == 0o600
+    with pytest.raises(ValueError, match="readable or writable by others"):
+        capture_transcript(t, session_id="s", config=CFG)
+    assert spool_path().read_text() == ""
+
+
+def test_a_loose_capture_dir_is_refused(tmp_path):
+    d = capture.ensure_state_dir()
+    os.chmod(d, 0o750)
+
+    with pytest.raises(ValueError, match="accessible to other users"):
+        capture.ensure_state_dir()
 
 
 def test_a_fifo_capture_log_does_not_hang_the_hook(tmp_path):
@@ -773,7 +783,8 @@ def test_a_hard_linked_cursor_tmp_is_refused_without_truncating(tmp_path):
     t = tmp_path / "s.jsonl"
     write(t, [user("u-01", "q1"), assistant("a-01", text("r1")), user("u-02", "q2")])
     cursor = capture._cursor_path("claude-code", "s")
-    cursor.parent.mkdir(parents=True, mode=0o700)
+    capture.ensure_state_dir()
+    cursor.parent.mkdir(mode=0o700)
     victim = tmp_path / "victim.txt"
     victim.write_text("keep me")
     os.link(victim, cursor.with_suffix(".tmp"))
@@ -805,7 +816,7 @@ def test_the_hook_gives_up_on_a_busy_lock(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(capture, "HOOK_LOCK_TIMEOUT", 0.2)
     t = tmp_path / "s.jsonl"
     write(t, [user("u-01", "q1")])
-    lock = open(capture.ensure_state_dir() / "capture.lock", "a+b")
+    lock = os.fdopen(os.open(capture.ensure_state_dir() / "capture.lock", os.O_RDWR | os.O_CREAT, 0o600), "r+b")
     fcntl.flock(lock, fcntl.LOCK_EX)
     try:
         payload = json.dumps({"transcript_path": str(t), "session_id": "s"})
@@ -824,3 +835,94 @@ def test_stripping_a_block_cannot_glue_a_key_to_a_word():
     assert strip_injected(f"check<context>x</context>{key}", ("context",)) == f"check {key}"
     [t] = list(claude_code_turns([user("u-01", f"check<context>x</context>{key}")], session_id="s"))
     assert t.user == "check [REDACTED]"
+
+
+def test_a_bearer_split_across_blocks_is_redacted_whole_at_the_side_cap(monkeypatch):
+    monkeypatch.setattr(capture, "MAX_SIDE_CHARS", 5000)
+    token = "head.sk-" + "A" * 30 + "." + "S" * 2000
+    records = [user("u-01", "go"), assistant("a-01", text("Bearer"), text(token + " " + "p" * 6000))]
+    [t] = list(claude_code_turns(records, session_id="s"))
+    assert "SSSS" not in t.assistant and "AAAA" not in t.assistant
+
+
+def test_an_injected_block_split_across_blocks_is_dropped_at_the_side_cap(monkeypatch):
+    monkeypatch.setattr(capture, "MAX_SIDE_CHARS", 3000)
+    records = [user("u-01", "go"),
+               assistant("a-01", text("Intro. <context>" + "private " * 500), text("</context>answer"))]
+    [t] = list(claude_code_turns(records, session_id="s"))
+    assert "private" not in t.assistant and "<context>" not in t.assistant
+    assert t.assistant.startswith("Intro.")
+
+
+def test_the_side_cap_cuts_on_whitespace():
+    turn = capture._new_turn("a", {})
+    capture.MAX_SIDE_CHARS, saved = 10, capture.MAX_SIDE_CHARS
+    try:
+        capture._add(turn, "assistant", ["abc defghijklmnop", "more"])
+    finally:
+        capture.MAX_SIDE_CHARS = saved
+    assert turn["assistant"] == ["abc"]
+    assert turn["dropped"]["assistant"] == len("abc defghijklmnop") - 3 + 4
+
+
+def test_a_fifo_cursor_does_not_hang_the_hook(tmp_path):
+    state = tmp_path / "state"
+    cursors = state / "kipp" / "capture" / "cursors"
+    cursors.mkdir(parents=True)
+    for d in (cursors, cursors.parent):
+        os.chmod(d, 0o700)
+    os.mkfifo(cursors / "claude-code-s1.json")
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "q1")])
+    env = {**os.environ, "PYTHONPATH": str(Path(capture.__file__).parents[1]),
+           "XDG_STATE_HOME": str(state)}
+    payload = json.dumps({"transcript_path": str(t), "session_id": "s1"})
+
+    out = subprocess.run([sys.executable, "-m", "kipp.capture", "--hook"], input=payload,
+                         capture_output=True, text=True, timeout=10, env=env)
+    assert out.returncode == 0
+
+
+def test_a_huge_cursor_is_ignored(tmp_path):
+    capture.ensure_state_dir()
+    cursor = capture._cursor_path("claude-code", "s")
+    cursor.parent.mkdir(mode=0o700)
+    cursor.write_text(" " * (capture._CURSOR_MAX_BYTES + 1))
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "q1")])
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 1
+
+
+def test_turns_carry_their_anchor_offset_and_capture_resumes_there(tmp_path):
+    t = tmp_path / "s.jsonl"
+    records = [user("u-00", "q0")]
+    for i in range(1, 6):
+        records += [assistant(f"a-{i:02d}", {"type": "tool_use", "id": f"t{i}", "name": "x", "input": {}}),
+                    user(f"r-{i:02d}", [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "ok"}])]
+    records += [user("u-01", "q1"), assistant("a-99", text("done"))]
+    write(t, records)
+    anchor_at = t.read_bytes().index(b'"uuid": "u-01"')
+    line_start = t.read_bytes().rindex(b"\n", 0, anchor_at) + 1
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 2
+    cursor = json.loads(capture._cursor_path("claude-code", "s").read_text())
+    assert cursor["offset"] == line_start
+    assert capture_transcript(t, session_id="s", config=CFG) == 1
+    assert all("offset" not in r and capture.OFFSET_KEY not in r for r in spooled())
+
+
+def test_a_line_with_no_end_stops_after_the_skip_budget(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 1000)
+    monkeypatch.setattr(capture, "MAX_SKIP_BYTES", 10_000)
+    t = tmp_path / "s.jsonl"
+    with open(t, "wb") as f:
+        f.write(json.dumps(user("u-01", "q1")).encode() + b"\n")
+        f.truncate(f.tell() + (1 << 30))  # a sparse 1 GiB with no newline
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 1
+
+
+@pytest.mark.parametrize("cwd", ["~\0x", "~\ud800"])
+def test_a_malformed_cwd_uses_the_default_domain(cwd):
+    assert resolve_domain(cwd, {"~/dev": "dev"}, "personal") == "personal"

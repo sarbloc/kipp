@@ -79,6 +79,8 @@ _SECRET_PATTERNS = [
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----")
 REDACTED = "[REDACTED]"
+# Key the capture loop adds to each transcript record: its byte offset.
+OFFSET_KEY = "_kipp_offset"
 # Redaction sees this much text past the clip point, so a key that starts
 # before the clip is matched whole. Longer than any single-line key.
 _REDACT_MARGIN = 1024
@@ -86,6 +88,9 @@ _REDACT_MARGIN = 1024
 # stripping and redaction still see whole blocks and keys; caps memory when an
 # assistant reply runs to thousands of records.
 MAX_SIDE_CHARS = 1 << 20
+# How far past MAX_LINE_BYTES a skipped line is scanned for its end before
+# capture gives up on the transcript for this run.
+MAX_SKIP_BYTES = 256 << 20
 # A transcript line longer than this is skipped unread, so one huge tool
 # output can't exhaust memory. Dialogue is clipped far below it anyway.
 MAX_LINE_BYTES = 16 << 20
@@ -108,6 +113,9 @@ class Turn:
     user: str
     assistant: str
     domain: str = "shared"
+    # Byte offset of the anchor record in the transcript, when read from a
+    # file (``OFFSET_KEY`` on the record); where the next capture resumes.
+    offset: int | None = None
 
     @property
     def text(self) -> str:
@@ -119,19 +127,24 @@ class Turn:
         return "\n\n".join(parts)
 
     def spool_record(self) -> dict:
-        return {**asdict(self), "text": self.text}
+        record = asdict(self)
+        del record["offset"]
+        return {**record, "text": self.text}
 
 
 # --- text cleaning -------------------------------------------------------------
 
 
-def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS) -> str:
+def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS, *,
+                   truncated: bool = False) -> str:
     """Remove injected ``<tag ...>...</tag>`` blocks and collapse the leftover blank lines.
 
     Nesting is balanced, so a block quoting another block of the same tag is
     removed whole. An opening tag that's never closed is kept as literal text
-    (the user may simply have typed it), and so is a stray closing tag. One
-    pass over the tags, so the cost is linear in the text.
+    (the user may simply have typed it), and so is a stray closing tag. When
+    ``truncated``, the text was cut short and the closing tag may have been
+    cut with it, so an unclosed block is dropped to the end instead. One pass
+    over the tags, so the cost is linear in the text.
     """
     names = "|".join(re.escape(t) for t in tags)
     if not names:
@@ -158,10 +171,16 @@ def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS) -> str:
             if top == name:
                 break
         (stack[-1][2] if stack else drops).append((top_start, m.end()))
-    for _, _, regions in stack:  # unclosed blocks stay as text; their closed children don't
-        drops.extend(regions)
+    if truncated and stack:
+        drops.append((stack[0][1], len(text)))  # covers every block opened inside it
+    else:
+        for _, _, regions in stack:  # unclosed blocks stay as text; their closed children don't
+            drops.extend(regions)
     out, i = [], 0
     for a, b in sorted(drops):
+        if b <= i:
+            continue
+        a = max(a, i)
         out.append(text[i:a])
         # A space where a block sat between two words, so dropping it can't
         # glue text together (``check<context>x</context>ghp_...`` must not
@@ -213,7 +232,7 @@ def clip(text: str, limit: int = CLIP_CHARS, hidden: int = 0) -> str:
 
 def clean(text: str, tags: Iterable[str], dropped: int = 0) -> str:
     """Strip, redact and clip; ``dropped`` counts chars already cut upstream."""
-    stripped = strip_injected(text, tags)
+    stripped = strip_injected(text, tags, truncated=dropped > 0)
     # Redact a window reaching past the clip point, then clip, so a clip can't
     # cut a secret in half and leave a fragment the patterns miss. Redaction can
     # shrink the window (a long key becomes "[REDACTED]"), which would pull a
@@ -271,7 +290,9 @@ def _usable_id(value) -> bool:
 
 
 def _new_turn(anchor: str, r: dict) -> dict:
+    offset = r.get(OFFSET_KEY)
     return {"anchor": anchor, "timestamp": _str(r.get("timestamp")), "cwd": _str(r.get("cwd")),
+            "offset": offset if isinstance(offset, int) else None,
             "user": [], "assistant": [], "size": {"user": 0, "assistant": 0},
             "dropped": {"user": 0, "assistant": 0}}
 
@@ -280,20 +301,26 @@ def _add(turn: dict, side: str, texts: list[str]) -> None:
     """Append text to one side of a turn, keeping at most ``MAX_SIDE_CHARS``.
 
     A long run of assistant records would otherwise pile up in memory only to
-    be clipped to ``CLIP_CHARS``. The cut is counted in the clip marker. A
-    block that gets cut is redacted first, so the cut can't leave a key
-    fragment too short for the patterns to recognise.
+    be clipped to ``CLIP_CHARS``. The cut is counted in the clip marker. It
+    falls on whitespace, dropping the partial word before it, so it can't
+    leave a key fragment too short for the redaction patterns; redaction
+    itself runs later on the joined text, so matches can span blocks.
     """
     for t in texts:
         room = MAX_SIDE_CHARS - turn["size"][side]
         if room <= 0:
             turn["dropped"][side] += len(t)
             continue
-        if len(t) > room:
-            t = redact(t)
-        turn[side].append(t[:room])
-        turn["size"][side] += min(len(t), room)
-        turn["dropped"][side] += max(0, len(t) - room)
+        keep = len(t)
+        if keep > room:
+            keep = room
+            while keep and not t[keep].isspace():  # t[room] exists: len(t) > room
+                keep -= 1
+            turn["size"][side] = MAX_SIDE_CHARS  # full: later blocks are dropped
+        else:
+            turn["size"][side] += keep
+        turn[side].append(t[:keep])
+        turn["dropped"][side] += len(t) - keep
 
 
 def claude_code_turns(
@@ -321,7 +348,7 @@ def claude_code_turns(
         return Turn(
             id=str(uuid.uuid5(TURN_NAMESPACE, f"claude-code:{session_id}:{t['anchor']}")),
             anchor=t["anchor"], client="claude-code", session_id=session_id, timestamp=t["timestamp"],
-            cwd=t["cwd"] or cwd, user=user, assistant=assistant,
+            cwd=t["cwd"] or cwd, user=user, assistant=assistant, offset=t["offset"],
         )
 
     for r in records:
@@ -422,11 +449,18 @@ class TranscriptReader:
                 yield start, rec
 
     def _skip_rest(self, length: int) -> int | None:
-        """Read past the rest of an oversized line; its total length, or None at EOF."""
-        while chunk := self._f.readline(1 << 20):
+        """Read past the rest of an oversized line; its total length, or None at EOF.
+
+        Gives up (None) after ``MAX_SKIP_BYTES``, so a gigantic line (or a
+        sparse file with no newline) can't stall every hook run.
+        """
+        while length < MAX_SKIP_BYTES and (chunk := self._f.readline(1 << 20)):
             length += len(chunk)
             if chunk.endswith(b"\n"):
                 return length
+        if length >= MAX_SKIP_BYTES:
+            log.warning("transcript line at byte %d in %s runs past %d bytes; not reading further",
+                        self.end, self._name, MAX_SKIP_BYTES)
         return None
 
 
@@ -467,9 +501,20 @@ def ensure_state_dir() -> Path:
     kipp = _owned_dir(d.parent, mine=True)
     if kipp.st_mode & 0o022:
         os.chmod(d.parent, stat.S_IMODE(kipp.st_mode) & ~0o022)
-    _owned_dir(d, mine=True)
-    os.chmod(d, 0o700)  # mkdir's mode is masked by umask and skipped if it exists
+    _private_dir(d)
     return d
+
+
+def _private_dir(path: Path) -> None:
+    """Refuse a state directory others can or could get into.
+
+    We always create these 0700, so a looser one was made or changed by
+    someone else, who may still hold it open: refuse rather than tighten.
+    """
+    st = _owned_dir(path, mine=True)
+    if stat.S_IMODE(st.st_mode) & 0o077:
+        raise ValueError(f"{path} is accessible to other users; refusing to write conversation "
+                         "text there (check it and remove it)")
 
 
 _PRIVATE_FLAGS = os.O_CREAT | os.O_NOFOLLOW
@@ -487,8 +532,10 @@ def _open_private(path: Path, flags: int):
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
             raise ValueError(f"{path} is not a private regular file; refusing to write conversation text to it")
-        if stat.S_IMODE(st.st_mode) != 0o600:
-            os.fchmod(fd, 0o600)
+        if stat.S_IMODE(st.st_mode) & 0o077:
+            # Tightening wouldn't revoke a descriptor someone opened meanwhile.
+            raise ValueError(f"{path} is readable or writable by others; refusing to write "
+                             "conversation text to it (check it and remove it)")
         if truncate:
             os.ftruncate(fd, 0)
         os.set_blocking(fd, True)
@@ -517,6 +564,27 @@ def _fingerprint(f, offset: int) -> str:
     return hashlib.sha256(f.read(offset - start)).hexdigest()
 
 
+_CURSOR_MAX_BYTES = 64 << 10
+
+
+def _read_private(path: Path, limit: int) -> bytes:
+    """Read a state file we wrote: no symlink, FIFO, device or other user's file, and at most ``limit`` bytes."""
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid():
+            raise ValueError(f"{path} is not a private regular file")
+        with os.fdopen(fd, "rb") as f:
+            fd = -1
+            data = f.read(limit + 1)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    if len(data) > limit:
+        raise ValueError(f"{path} is over {limit} bytes")
+    return data
+
+
 def _read_cursor(client: str, session_id: str, transcript: Path, f) -> int:
     """The saved offset, or 0 when there is none or the transcript was replaced or rewritten.
 
@@ -524,10 +592,10 @@ def _read_cursor(client: str, session_id: str, transcript: Path, f) -> int:
     """
     p = _cursor_path(client, session_id)
     try:
-        data = json.loads(p.read_text())
+        data = json.loads(_read_private(p, _CURSOR_MAX_BYTES))
     except FileNotFoundError:
         return 0
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:  # JSONDecodeError and bad UTF-8 are ValueErrors
         log.warning("unreadable cursor %s (%s); recapturing from the start", p, exc)
         return 0
     offset = data.get("offset") if isinstance(data, dict) else None
@@ -545,8 +613,7 @@ def _read_cursor(client: str, session_id: str, transcript: Path, f) -> int:
 def _write_cursor(client: str, session_id: str, transcript: Path, f, offset: int) -> None:
     p = _cursor_path(client, session_id)
     p.parent.mkdir(exist_ok=True, mode=0o700)
-    if p.parent.is_symlink():
-        raise ValueError(f"{p.parent} is a symlink; refusing to write through it")
+    _private_dir(p.parent)
     tmp = p.with_suffix(".tmp")
     data = json.dumps({
         "path": str(transcript), "offset": offset, "inode": os.fstat(f.fileno()).st_ino,
@@ -631,9 +698,12 @@ def resolve_domain(cwd: str, routes: dict[str, str], default: str = "shared") ->
     ``{"~/dev": "dev"}``. A prefix matches whole path components only, so
     ``~/dev`` doesn't match ``~/devices``.
     """
-    if not cwd:
+    if not cwd or "\0" in cwd:
         return default
-    path = os.path.normpath(os.path.expanduser(cwd))
+    try:
+        path = os.path.normpath(os.path.expanduser(cwd))
+    except (ValueError, UnicodeError):  # a malformed record's cwd
+        return default
     best, best_len = default, -1
     for prefix, domain in routes.items():
         root = os.path.normpath(os.path.expanduser(prefix))
@@ -693,30 +763,29 @@ def capture_transcript(
     with _Lock(lock_timeout), open_transcript(transcript) as f:
         offset = _read_cursor(client, session_id, transcript, f)
         reader = TranscriptReader(f, offset, str(transcript))
-        starts: dict[str, int] = {}
-
         def records() -> Iterator[dict]:
-            # Records stream through the adapter one at a time; only their
-            # start offsets are kept, to place the cursor.
+            # Each record carries its start offset, which the adapter copies
+            # onto the turn it opens, to place the cursor.
             for start, rec in reader:
-                if isinstance(rec.get("uuid"), str):
-                    starts[rec["uuid"]] = start
+                rec[OFFSET_KEY] = start
                 yield rec
 
         # Spooled in batches, so a big backlog isn't held in memory. A failure
         # part-way leaves the cursor unmoved and the next run re-spools those
         # turns under the same ids, which the flush deduplicates.
-        count, last, lines = 0, None, []
+        count, resume, lines = 0, None, []
         for t in adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags):
             t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
             lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
-            count, last = count + 1, t.anchor
+            if t.offset is None:
+                raise RuntimeError(f"the {client} adapter left a turn without its offset")
+            count, resume = count + 1, t.offset
             if len(lines) >= SPOOL_BATCH:
                 _append_to_spool("".join(lines))
                 lines = []
         if lines:
             _append_to_spool("".join(lines))
-        new_offset = starts[last] if last is not None else reader.end
+        new_offset = resume if resume is not None else reader.end
         if new_offset != offset:
             _write_cursor(client, session_id, transcript, f, new_offset)
     return count
