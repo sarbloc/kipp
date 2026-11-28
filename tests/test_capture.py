@@ -973,3 +973,20 @@ def test_spool_batches_are_bounded_by_size(tmp_path, monkeypatch):
 @pytest.mark.parametrize("cwd", ["~\0x", "~\ud800"])
 def test_a_malformed_cwd_uses_the_default_domain(cwd):
     assert resolve_domain(cwd, {"~/dev": "dev"}, "personal") == "personal"
+
+
+def test_a_turn_longer_than_the_budget_does_not_stall_capture(tmp_path, monkeypatch):
+    clock = iter(range(1_000_000))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(clock))
+    t = tmp_path / "s.jsonl"
+    records = [user("u-00", "q0")]
+    for i in range(20):  # one turn far longer than the 5-tick budget
+        records += [assistant(f"a-{i:02d}", {"type": "tool_use", "id": f"t{i}", "name": "x", "input": {}}),
+                    user(f"r-{i:02d}", [{"type": "tool_result", "tool_use_id": f"t{i}", "content": "ok"}])]
+    records += [assistant("a-99", text("final reply")), user("u-01", "q1"), assistant("a-98", text("r1"))]
+    write(t, records)
+
+    for _ in range(30):
+        capture_transcript(t, session_id="s", config=CFG, time_budget=5)
+    texts = " ".join(r["text"] for r in spooled())
+    assert "q0" in texts and "final reply" in texts and "q1" in texts and "r1" in texts

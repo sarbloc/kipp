@@ -424,12 +424,14 @@ class TranscriptReader:
 
     def __init__(self, f, offset: int, name: str = "transcript", deadline: float | None = None):
         self._f, self.end, self._name, self._deadline = f, offset, name, deadline
+        self.timed_out = False
 
     def _out_of_time(self) -> bool:
         if self._deadline is None or time.monotonic() < self._deadline:
             return False
         log.warning("capture time budget used up at byte %d in %s; resuming next run",
                     self.end, self._name)
+        self.timed_out = True
         return True
 
     def __iter__(self) -> Iterator[tuple[int, dict]]:
@@ -799,6 +801,11 @@ def capture_transcript(
         if lines:
             _append_to_spool("".join(lines))
         new_offset = resume if resume is not None else reader.end
+        if reader.timed_out and new_offset == offset:
+            # One turn outran the whole budget: resuming at its start would
+            # never get further. Move on; the rest of it is captured next run
+            # as a turn of its own.
+            new_offset = reader.end
         if new_offset != offset:
             _write_cursor(client, session_id, transcript, f, new_offset)
     return count
