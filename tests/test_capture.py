@@ -989,4 +989,39 @@ def test_a_turn_longer_than_the_budget_does_not_stall_capture(tmp_path, monkeypa
     for _ in range(30):
         capture_transcript(t, session_id="s", config=CFG, time_budget=5)
     texts = " ".join(r["text"] for r in spooled())
-    assert "q0" in texts and "final reply" in texts and "q1" in texts and "r1" in texts
+    # The tail of the over-long turn is dropped; capture moves on past it.
+    assert "q0" in texts and "q1" in texts and "r1" in texts
+    assert "final reply" not in texts
+
+
+def test_a_key_split_by_a_forced_checkpoint_is_not_spooled(tmp_path, monkeypatch):
+    clock = iter(range(1_000_000))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(clock))
+    t = tmp_path / "s.jsonl"
+    records = [user("u-00", "q0"), assistant("a-00", text("-----BEGIN PRIVATE KEY-----"))]
+    for i in range(10):
+        records += [assistant(f"a-{i + 1:02d}", text(f"KEYMATERIAL{i}"))]
+    records += [assistant("a-90", text("-----END PRIVATE KEY----- done")),
+                user("u-01", "q1"), assistant("a-91", text("r1"))]
+    write(t, records)
+
+    for _ in range(30):
+        capture_transcript(t, session_id="s", config=CFG, time_budget=4)
+    texts = " ".join(r["text"] for r in spooled())
+    assert "KEYMATERIAL" not in texts
+    assert "q1" in texts and "r1" in texts
+
+
+def test_skipping_an_oversized_line_keeps_its_progress_across_runs(tmp_path, monkeypatch):
+    clock = iter(range(1_000_000))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 1000)
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "x" * (30 << 20)), user("u-02", "after"), assistant("a-02", text("r"))])
+
+    for _ in range(40):
+        capture_transcript(t, session_id="s", config=CFG, time_budget=5)
+        if any(r["user"] == "after" for r in spooled()):
+            break
+    else:
+        pytest.fail("capture never got past the oversized line")

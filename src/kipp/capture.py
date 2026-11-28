@@ -329,7 +329,7 @@ def _add(turn: dict, side: str, texts: list[str]) -> None:
 
 def claude_code_turns(
     records: Iterable[dict], *, session_id: str, cwd: str = "",
-    tags: Iterable[str] = DEFAULT_STRIP_TAGS,
+    tags: Iterable[str] = DEFAULT_STRIP_TAGS, mid_turn: bool = False,
 ) -> Iterator[Turn]:
     """Group Claude Code transcript records into turns.
 
@@ -338,6 +338,9 @@ def claude_code_turns(
     with no open turn (a reply the user didn't prompt, e.g. after a background
     task) opens a turn with an empty user side. The transcript format is
     undocumented, so unknown or malformed records are skipped, never fatal.
+
+    ``mid_turn`` means the records start part-way through a turn: assistant
+    text before the first user message is dropped, not captured unprompted.
     """
     tags = tuple(tags)
     turn: dict | None = None
@@ -384,6 +387,8 @@ def claude_code_turns(
             if not texts:
                 continue
             if turn is None:
+                if mid_turn:
+                    continue
                 turn = _new_turn(anchor, r)
             _add(turn, "assistant", texts)
     done = finish(turn)
@@ -442,9 +447,11 @@ class TranscriptReader:
             if not line.endswith(b"\n"):
                 if len(line) <= MAX_LINE_BYTES:
                     return  # partial last line
-                length = self._skip_rest(len(line))
-                if length is None:
-                    return  # oversized and still being written
+                length, complete = self._skip_rest(len(line))
+                if not complete:
+                    if self.timed_out:  # keep the progress; the next run skips on from here
+                        self.end += length
+                    return  # else oversized and still being written
                 self.end += length
                 log.warning("skipping a %d-byte transcript line at byte %d in %s",
                             length, start, self._name)
@@ -461,14 +468,19 @@ class TranscriptReader:
             if isinstance(rec, dict):
                 yield start, rec
 
-    def _skip_rest(self, length: int) -> int | None:
-        """Read past the rest of an oversized line; its total length, or None at
-        EOF or when the time budget runs out (the line is retried next run)."""
+    def _skip_rest(self, length: int) -> tuple[int, bool]:
+        """Read past the rest of an oversized line: (bytes read, whether its end was reached).
+
+        Stops at EOF or when the time budget runs out. A later run that starts
+        part-way through the line reads its tail as a line of its own, which
+        is either oversized too (skipped on) or a fragment that isn't valid
+        JSON (skipped as malformed).
+        """
         while not self._out_of_time() and (chunk := self._f.readline(1 << 20)):
             length += len(chunk)
             if chunk.endswith(b"\n"):
-                return length
-        return None
+                return length, True
+        return length, False
 
 
 # --- state: cursors, spool, lock -----------------------------------------------
@@ -592,8 +604,9 @@ def _read_private(path: Path, limit: int) -> bytes:
     return data
 
 
-def _read_cursor(client: str, session_id: str, transcript: Path, f) -> int:
-    """The saved offset, or 0 when there is none or the transcript was replaced or rewritten.
+def _read_cursor(client: str, session_id: str, transcript: Path, f) -> tuple[int, bool]:
+    """The saved offset and whether it's part-way through a turn; (0, False)
+    when there is none or the transcript was replaced or rewritten.
 
     Restarting is always safe: turn ids are stable, so the flush deduplicates.
     """
@@ -601,30 +614,31 @@ def _read_cursor(client: str, session_id: str, transcript: Path, f) -> int:
     try:
         data = json.loads(_read_private(p, _CURSOR_MAX_BYTES))
     except FileNotFoundError:
-        return 0
+        return 0, False
     except (OSError, ValueError) as exc:  # JSONDecodeError and bad UTF-8 are ValueErrors
         log.warning("unreadable cursor %s (%s); recapturing from the start", p, exc)
-        return 0
+        return 0, False
     offset = data.get("offset") if isinstance(data, dict) else None
     if not isinstance(offset, int) or offset < 0 or data.get("path") != str(transcript):
-        return 0
+        return 0, False
     st = os.fstat(f.fileno())
     if (data.get("inode") != st.st_ino or offset > st.st_size
             or data.get("fingerprint") != _fingerprint(f, offset)):
         log.info("transcript %s changed since the last capture; recapturing from the start",
                  transcript)
-        return 0
-    return offset
+        return 0, False
+    return offset, data.get("mid_turn") is True
 
 
-def _write_cursor(client: str, session_id: str, transcript: Path, f, offset: int) -> None:
+def _write_cursor(client: str, session_id: str, transcript: Path, f, offset: int,
+                  mid_turn: bool = False) -> None:
     p = _cursor_path(client, session_id)
     p.parent.mkdir(exist_ok=True, mode=0o700)
     _private_dir(p.parent)
     tmp = p.with_suffix(".tmp")
     data = json.dumps({
         "path": str(transcript), "offset": offset, "inode": os.fstat(f.fileno()).st_ino,
-        "fingerprint": _fingerprint(f, offset),
+        "fingerprint": _fingerprint(f, offset), "mid_turn": mid_turn,
     })
     with os.fdopen(_open_private(tmp, os.O_WRONLY | os.O_TRUNC), "w") as out:
         out.write(data)
@@ -774,7 +788,7 @@ def capture_transcript(
     config = config or CaptureConfig.load()
     adapter = ADAPTERS[client]
     with _Lock(lock_timeout), open_transcript(transcript) as f:
-        offset = _read_cursor(client, session_id, transcript, f)
+        offset, mid_turn = _read_cursor(client, session_id, transcript, f)
         deadline = None if time_budget is None else time.monotonic() + time_budget
         reader = TranscriptReader(f, offset, str(transcript), deadline)
         def records() -> Iterator[dict]:
@@ -788,7 +802,8 @@ def capture_transcript(
         # part-way leaves the cursor unmoved and the next run re-spools those
         # turns under the same ids, which the flush deduplicates.
         count, resume, lines, size = 0, None, [], 0
-        for t in adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags):
+        for t in adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags,
+                         mid_turn=mid_turn):
             t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
             lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
             size += len(lines[-1])
@@ -801,13 +816,16 @@ def capture_transcript(
         if lines:
             _append_to_spool("".join(lines))
         new_offset = resume if resume is not None else reader.end
-        if reader.timed_out and new_offset == offset:
+        # Still inside that turn until a turn is seen to start.
+        new_mid_turn = mid_turn and resume is None
+        if reader.timed_out and new_offset == offset and reader.end > offset:
             # One turn outran the whole budget: resuming at its start would
-            # never get further. Move on; the rest of it is captured next run
-            # as a turn of its own.
-            new_offset = reader.end
-        if new_offset != offset:
-            _write_cursor(client, session_id, transcript, f, new_offset)
+            # never get further. Move on, and drop the rest of that turn next
+            # run: it may start inside a block (a key, an injected tag) whose
+            # opening was in the part already read.
+            new_offset, new_mid_turn = reader.end, True
+        if (new_offset, new_mid_turn) != (offset, mid_turn):
+            _write_cursor(client, session_id, transcript, f, new_offset, new_mid_turn)
     return count
 
 
