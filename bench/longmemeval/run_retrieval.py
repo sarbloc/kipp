@@ -37,6 +37,7 @@ import argparse
 import hashlib
 import json
 import logging
+import os
 import sys
 import time
 from collections import defaultdict
@@ -173,7 +174,13 @@ class EmbeddingCache:
 
     def add(self, texts: list[str], vectors: np.ndarray) -> None:
         keys = [_key(t) for t in texts]
-        np.savez(self.directory / f"part-{self._parts:05d}.npz", keys=np.array(keys), vectors=vectors)
+        path = self.directory / f"part-{self._parts:05d}.npz"
+        # Written aside and renamed, so a killed save never leaves a part
+        # that the next run's load would choke on.
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "wb") as f:
+            np.savez(f, keys=np.array(keys), vectors=vectors)
+        os.replace(tmp, path)
         self._parts += 1
         self.vectors.update(zip(keys, vectors, strict=True))
 

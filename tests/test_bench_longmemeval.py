@@ -105,6 +105,25 @@ def test_embedding_cache_dedupes_and_survives_reload(tmp_path):
     assert len(list(tmp_path.glob("part-*.npz"))) == 3
 
 
+def test_interrupted_save_leaves_no_part(tmp_path, monkeypatch):
+    cache = rr.EmbeddingCache(tmp_path)
+    cache.add(["a"], np.array([[1.0]], dtype=np.float32))
+
+    def killed(f, **_):
+        f.write(b"half a zip")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(rr.np, "savez", killed)
+    with pytest.raises(KeyboardInterrupt):
+        cache.add(["b"], np.array([[0.0]], dtype=np.float32))
+    monkeypatch.undo()
+
+    reloaded = rr.EmbeddingCache(tmp_path)
+    assert reloaded.missing(["a", "b"]) == ["b"]
+    reloaded.add(["b"], np.array([[0.0]], dtype=np.float32))
+    assert sorted(p.name for p in tmp_path.glob("part-*.npz")) == ["part-00000.npz", "part-00001.npz"]
+
+
 def test_load_questions_flattens_sessions(tmp_path):
     import json
 
