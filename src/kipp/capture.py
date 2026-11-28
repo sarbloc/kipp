@@ -508,8 +508,7 @@ class TranscriptReader:
                             start, self._name)
                 yield start, {"type": GAP_RECORD}
                 continue
-            if isinstance(rec, dict):
-                yield start, rec
+            yield start, rec if isinstance(rec, dict) else {"type": GAP_RECORD}
 
     def _skip_rest(self, length: int) -> tuple[int, bool]:
         """Read past the rest of an oversized line: (bytes read, whether its end was reached).
@@ -549,27 +548,32 @@ def ensure_state_dir() -> Path:
     """Create the capture directory, private to the user: it holds conversation text.
 
     No other user may be able to swap a directory on the path between these
-    checks and the writes: ``capture`` and ``kipp`` must be ours and lose any
-    group/other write bit, and the state base and every directory above it
-    (as written and as resolved) must be ours or root's and not
-    world-writable, unless sticky (like /tmp, where others can't rename our
-    entries). Group-writable is allowed above ``kipp``: with umask 002 that's
-    the user's own private group.
+    checks and the writes: ``capture`` and ``kipp`` must be ours and 0700, and
+    the state base and every directory or symlink above it (as written and
+    as resolved) must be ours or root's and not world-writable, unless sticky
+    (like /tmp, where others can't rename our entries). Group-writable is
+    allowed above ``kipp``: with umask 002 that's the user's own private group.
     """
     d = state_dir()
-    d.mkdir(parents=True, exist_ok=True, mode=0o700)
     base = d.parent.parent
+    base.mkdir(parents=True, exist_ok=True)
     _owned_dir(base, mine=False)
-    for ancestor in {base, *base.parents, Path(os.path.realpath(base)), *Path(os.path.realpath(base)).parents}:
-        st = os.stat(ancestor)
-        if st.st_uid not in (os.getuid(), 0):
-            raise ValueError(f"{ancestor} is owned by uid {st.st_uid}; refusing to write conversation text under it")
-        if st.st_mode & stat.S_IWOTH and not st.st_mode & stat.S_ISVTX:
-            raise ValueError(f"{ancestor} is world-writable; refusing to write conversation text under it")
-    kipp = _owned_dir(d.parent, mine=True)
-    if kipp.st_mode & 0o022:
-        os.chmod(d.parent, stat.S_IMODE(kipp.st_mode) & ~0o022)
-    _private_dir(d)
+    real = Path(os.path.realpath(base))
+    for ancestor in {base, *base.parents, real, *real.parents}:
+        for st in (os.lstat(ancestor), os.stat(ancestor)):  # a symlink itself, then its target
+            if st.st_uid not in (os.getuid(), 0):
+                raise ValueError(f"{ancestor} is owned by uid {st.st_uid}; refusing to write "
+                                 "conversation text under it")
+            if (stat.S_ISDIR(st.st_mode) and st.st_mode & stat.S_IWOTH
+                    and not st.st_mode & stat.S_ISVTX):
+                raise ValueError(f"{ancestor} is world-writable; refusing to write conversation "
+                                 "text under it")
+    # Created 0700 one level at a time (mode only applies to the last level of
+    # mkdir(parents=True)), then checked; never chmodded, since a chmod
+    # through a swapped path could widen someone else's directory.
+    for level in (d.parent, d):
+        level.mkdir(exist_ok=True, mode=0o700)
+        _private_dir(level)
     return d
 
 

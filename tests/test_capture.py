@@ -532,6 +532,7 @@ def test_stripping_many_incomplete_tags_is_linear():
 def test_hook_exits_0_when_the_state_dir_is_a_symlink(tmp_path, monkeypatch, capsys):
     real = tmp_path / "real"
     (real / "kipp").mkdir(parents=True)
+    os.chmod(real / "kipp", 0o700)
     (real / "kipp" / "capture").symlink_to(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(real))
 
@@ -603,6 +604,7 @@ def test_symlinked_log_is_refused(tmp_path, monkeypatch, capsys):
 def test_symlinked_state_dir_is_refused(tmp_path, monkeypatch):
     real = tmp_path / "real"
     (real / "kipp").mkdir(parents=True)
+    os.chmod(real / "kipp", 0o700)
     (real / "kipp" / "capture").symlink_to(tmp_path)
     monkeypatch.setenv("XDG_STATE_HOME", str(real))
 
@@ -672,15 +674,39 @@ def test_a_failed_batch_leaves_the_cursor_unmoved(tmp_path, monkeypatch):
     assert sorted({r["user"] for r in spooled()}) == [f"q{i}" for i in range(5)]
 
 
-def test_a_group_writable_kipp_dir_is_tightened(tmp_path, monkeypatch):
+def test_a_loose_kipp_dir_is_refused_not_chmodded(tmp_path, monkeypatch):
     base = tmp_path / "st"
     (base / "kipp").mkdir(parents=True)
-    os.chmod(base / "kipp", 0o777)
+    os.chmod(base / "kipp", 0o775)
     monkeypatch.setenv("XDG_STATE_HOME", str(base))
 
-    d = capture.ensure_state_dir()
-    assert stat.S_IMODE(os.stat(base / "kipp").st_mode) == 0o755
+    with pytest.raises(ValueError, match="accessible to other users"):
+        capture.ensure_state_dir()
+    assert stat.S_IMODE(os.stat(base / "kipp").st_mode) == 0o775
+
+
+def test_new_state_dirs_are_0700_whatever_the_umask(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "fresh" / "state"))
+    old = os.umask(0o002)
+    try:
+        d = capture.ensure_state_dir()
+    finally:
+        os.umask(old)
     assert stat.S_IMODE(os.stat(d).st_mode) == 0o700
+    assert stat.S_IMODE(os.stat(d.parent).st_mode) == 0o700
+
+
+def test_a_non_object_record_is_a_gap(tmp_path):
+    t = tmp_path / "s.jsonl"
+    lines = [json.dumps(user("u-00", "q0")), json.dumps(assistant("a-00", text("before"))),
+             json.dumps([assistant("a-01", text("-----BEGIN PRIVATE KEY-----"))]),
+             json.dumps(assistant("a-02", text("KEYBODY\n-----END PRIVATE KEY-----"))),
+             json.dumps(user("u-01", "q1"))]
+    t.write_text("\n".join(lines) + "\n")
+
+    capture_transcript(t, session_id="s", config=CFG)
+    texts = " ".join(r["text"] for r in spooled())
+    assert "KEYBODY" not in texts and "before" in texts and "q1" in texts
 
 
 def test_a_world_writable_state_base_is_refused(tmp_path, monkeypatch):
