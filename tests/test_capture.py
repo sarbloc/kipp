@@ -744,3 +744,26 @@ def test_an_existing_loose_spool_is_made_private(tmp_path):
 
     capture_transcript(t, session_id="s", config=CFG)
     assert stat.S_IMODE(os.stat(spool_path()).st_mode) == 0o600
+
+
+def test_a_fifo_capture_log_does_not_hang_the_hook(tmp_path):
+    state = tmp_path / "state"
+    d = state / "kipp" / "capture"
+    d.mkdir(parents=True, mode=0o700)
+    os.mkfifo(d / "capture.log")
+    env = {**os.environ, "PYTHONPATH": str(Path(capture.__file__).parents[1]),
+           "XDG_STATE_HOME": str(state)}
+
+    out = subprocess.run([sys.executable, "-m", "kipp.capture", "--hook"], input="{}",
+                         capture_output=True, text=True, timeout=10, env=env)
+
+    assert out.returncode == 0 and "can't open the capture log" in out.stderr
+
+
+def test_a_cut_at_the_side_cap_leaves_no_key_fragment(monkeypatch):
+    monkeypatch.setattr(capture, "MAX_SIDE_CHARS", 20_000)
+    pem = "-----BEGIN PRIVATE KEY-----\n" + "M" * 19_900 + "\n-----END PRIVATE KEY-----"
+    token = "ghp_" + "Z" * 40
+    records = [user("u-01", "go"), assistant("a-01", text(pem[:19_980 - 30] + pem[-25:] + " " + token))]
+    [t] = list(claude_code_turns(records, session_id="s"))
+    assert "ZZZZ" not in t.assistant and "ghp_" not in t.assistant

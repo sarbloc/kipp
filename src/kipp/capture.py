@@ -263,13 +263,17 @@ def _add(turn: dict, side: str, texts: list[str]) -> None:
     """Append text to one side of a turn, keeping at most ``MAX_SIDE_CHARS``.
 
     A long run of assistant records would otherwise pile up in memory only to
-    be clipped to ``CLIP_CHARS``. The cut is counted in the clip marker.
+    be clipped to ``CLIP_CHARS``. The cut is counted in the clip marker. A
+    block that gets cut is redacted first, so the cut can't leave a key
+    fragment too short for the patterns to recognise.
     """
     for t in texts:
         room = MAX_SIDE_CHARS - turn["size"][side]
         if room <= 0:
             turn["dropped"][side] += len(t)
             continue
+        if len(t) > room:
+            t = redact(t)
         turn[side].append(t[:room])
         turn["size"][side] += min(len(t), room)
         turn["dropped"][side] += max(0, len(t) - room)
@@ -457,13 +461,14 @@ def _open_private(path: Path, flags: int):
     O_NOFOLLOW stops symlinks only, and the create mode applies only to new
     files, so the opened file is checked: ours, a regular file, one link.
     """
-    fd = os.open(path, flags | _PRIVATE_FLAGS, 0o600)
+    fd = os.open(path, flags | _PRIVATE_FLAGS | os.O_NONBLOCK, 0o600)  # a FIFO can't hang the open
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_uid != os.getuid() or st.st_nlink != 1:
             raise ValueError(f"{path} is not a private regular file; refusing to write conversation text to it")
         if stat.S_IMODE(st.st_mode) != 0o600:
             os.fchmod(fd, 0o600)
+        os.set_blocking(fd, True)
         return fd
     except BaseException:
         os.close(fd)
