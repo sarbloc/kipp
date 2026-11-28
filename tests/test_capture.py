@@ -1260,3 +1260,15 @@ def test_an_open_turn_that_cleans_to_nothing_keeps_the_cursor(tmp_path):
 
     texts = " ".join(r["text"] for r in spooled())
     assert "PRIVATE" not in texts and "answer" in texts and "q1" in texts
+
+
+def test_a_line_with_absurd_structure_is_skipped_undecoded(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_CONTAINERS", 1000)
+    decoded = []
+    real = json.loads
+    monkeypatch.setattr(capture.json, "loads", lambda line: (decoded.append(len(line)), real(line))[1])
+    t = tmp_path / "s.jsonl"
+    write(t, [{"type": "progress", "data": [[]] * 2000}, user("u-01", "q1")])
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 1
+    assert max(decoded) < 1000

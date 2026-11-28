@@ -99,6 +99,9 @@ _REDACT_MARGIN = 1024
 # stripping and redaction still see whole blocks and keys; caps memory when an
 # assistant reply runs to thousands of records.
 MAX_SIDE_CHARS = 1 << 20
+# Brackets allowed in one transcript line before it's skipped undecoded
+# (brackets inside strings count too, so this errs towards skipping).
+MAX_LINE_CONTAINERS = 100_000
 # A transcript line longer than this is skipped unread, so one huge tool
 # output can't exhaust memory. Dialogue is clipped far below it anyway.
 MAX_LINE_BYTES = 16 << 20
@@ -511,6 +514,13 @@ class TranscriptReader:
                 continue
             self.end += len(line)
             if not line.strip():
+                continue
+            if line.count(b"[") + line.count(b"{") > MAX_LINE_CONTAINERS:
+                # Decoding would allocate an object per bracket: a few MB of
+                # them can cost a GB. Real records have nowhere near this many.
+                log.warning("skipping a transcript line with over %d brackets at byte %d in %s",
+                            MAX_LINE_CONTAINERS, start, self._name)
+                yield start, {"type": GAP_RECORD}
                 continue
             try:
                 rec = json.loads(line)
