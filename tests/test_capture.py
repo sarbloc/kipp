@@ -1088,3 +1088,37 @@ def test_a_fifo_config_does_not_hang_the_hook(tmp_path):
     out = subprocess.run([sys.executable, "-m", "kipp.capture", "--hook"], input=payload,
                          capture_output=True, text=True, timeout=10, env=env)
     assert out.returncode == 0
+
+
+def test_a_malformed_dialogue_record_is_a_gap():
+    records = [user("u-00", "q0"), assistant("a-00", text("before")),
+               {**assistant("a-01", text("-----BEGIN PRIVATE KEY-----")), "uuid": None},
+               assistant("a-02", text("KEYBODY\n-----END PRIVATE KEY-----")),
+               user("u-01", "q1"), assistant("a-03", text("r1"))]
+    got = list(claude_code_turns(records, session_id="s"))
+    texts = " ".join(t.text for t in got)
+    assert "KEYBODY" not in texts and "before" in texts and "r1" in texts
+
+
+def test_a_world_writable_ancestor_is_refused(tmp_path, monkeypatch):
+    shared = tmp_path / "shared"
+    (shared / "user").mkdir(parents=True)
+    os.chmod(shared, 0o777)
+    monkeypatch.setenv("XDG_STATE_HOME", str(shared / "user" / "state"))
+
+    with pytest.raises(ValueError, match="world-writable"):
+        capture.ensure_state_dir()
+
+
+def test_a_parse_memory_error_is_skipped(tmp_path, monkeypatch):
+    real = json.loads
+
+    def boom(line):
+        if b"huge" in line:
+            raise MemoryError
+        return real(line)
+
+    monkeypatch.setattr(capture.json, "loads", boom)
+    t = tmp_path / "s.jsonl"
+    write(t, [{"type": "progress", "huge": []}, user("u-01", "q1")])
+    assert capture_transcript(t, session_id="s", config=CFG) == 1

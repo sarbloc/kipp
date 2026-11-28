@@ -381,6 +381,14 @@ def claude_code_turns(
         message = r.get("message")
         anchor = r.get("uuid")
         if not isinstance(message, dict) or not _usable_id(anchor):
+            # Dialogue we can't read is a gap like a skipped line: it may have
+            # opened a block (a key) that the next record continues.
+            if turn is not None:
+                turn["cut"] = True
+                done = finish(turn)
+                if done:
+                    yield done
+            turn, mid_turn = None, True
             continue
         content = message.get("content")
         if kind == "user":
@@ -480,7 +488,7 @@ class TranscriptReader:
                 continue
             try:
                 rec = json.loads(line)
-            except (ValueError, RecursionError):  # bad JSON, bad UTF-8, absurd nesting
+            except (ValueError, RecursionError, MemoryError):  # bad JSON or UTF-8, absurd nesting or size
                 log.warning("skipping malformed transcript line at byte %d in %s",
                             start, self._name)
                 yield start, {"type": GAP_RECORD}
@@ -527,16 +535,22 @@ def ensure_state_dir() -> Path:
 
     No other user may be able to swap a directory on the path between these
     checks and the writes: ``capture`` and ``kipp`` must be ours and lose any
-    group/other write bit, and the state base must be ours or root's and not
+    group/other write bit, and the state base and every directory above it
+    (as written and as resolved) must be ours or root's and not
     world-writable, unless sticky (like /tmp, where others can't rename our
-    entries). A group-writable base is allowed: with umask 002 that's the
-    user's own private group.
+    entries). Group-writable is allowed above ``kipp``: with umask 002 that's
+    the user's own private group.
     """
     d = state_dir()
     d.mkdir(parents=True, exist_ok=True, mode=0o700)
-    base = _owned_dir(d.parent.parent, mine=False)
-    if base.st_mode & stat.S_IWOTH and not base.st_mode & stat.S_ISVTX:
-        raise ValueError(f"{d.parent.parent} is world-writable; refusing to write conversation text there")
+    base = d.parent.parent
+    _owned_dir(base, mine=False)
+    for ancestor in {base, *base.parents, Path(os.path.realpath(base)), *Path(os.path.realpath(base)).parents}:
+        st = os.stat(ancestor)
+        if st.st_uid not in (os.getuid(), 0):
+            raise ValueError(f"{ancestor} is owned by uid {st.st_uid}; refusing to write conversation text under it")
+        if st.st_mode & stat.S_IWOTH and not st.st_mode & stat.S_ISVTX:
+            raise ValueError(f"{ancestor} is world-writable; refusing to write conversation text under it")
     kipp = _owned_dir(d.parent, mine=True)
     if kipp.st_mode & 0o022:
         os.chmod(d.parent, stat.S_IMODE(kipp.st_mode) & ~0o022)
