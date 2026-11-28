@@ -66,7 +66,7 @@ The four kinds:
 | `evaluate.py` | `kipp eval`: recall scoring against a JSONL known-answer case file |
 | `split.py` | Split oversized entities: `plan_split` (Ward clustering), `move_facts` (target first, never loses a fact), `apply_plan` |
 | `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |
-| `capture.py` | `kipp-capture`: transcript → per-turn spool records (hook path, standard library only, never imports Qdrant or the model) |
+| `capture.py` | `kipp-capture`: transcript → per-turn spool records (hook path, standard library only, never imports Qdrant or the model; `KIPP_CAPTURE=off` disables the hook). Setup: `docs/capture.md` |
 | `flush.py` | `kipp capture flush`: spool → events (`source="capture"`), one event per text of a turn (`uuid5(turn id, sha256(text))`), older unconsolidated versions retired |
 
 ### MCP entrypoint

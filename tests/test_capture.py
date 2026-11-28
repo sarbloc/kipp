@@ -435,6 +435,35 @@ def test_hook_captures_from_the_payload(tmp_path, monkeypatch):
     assert [r["session_id"] for r in spooled()] == ["s1"]
 
 
+@pytest.mark.parametrize("value", ["off", "0", "false", "NO", " Off "])
+def test_hook_does_nothing_when_capture_is_switched_off(tmp_path, monkeypatch, value):
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "Ask."), assistant("a-01", text("Answer."))])
+    monkeypatch.setenv("KIPP_CAPTURE", value)
+
+    assert run_hook(monkeypatch, json.dumps({"session_id": "s1", "transcript_path": str(t)})) == 0
+    assert not capture.state_dir().exists()
+
+
+@pytest.mark.parametrize("value", ["", "on", "1"])
+def test_other_capture_values_leave_the_hook_on(tmp_path, monkeypatch, value):
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "Ask."), assistant("a-01", text("Answer."))])
+    monkeypatch.setenv("KIPP_CAPTURE", value)
+
+    run_hook(monkeypatch, json.dumps({"session_id": "s1", "transcript_path": str(t)}))
+    assert len(spooled()) == 1
+
+
+def test_switch_off_does_not_affect_file_mode(tmp_path, monkeypatch):
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "Ask."), assistant("a-01", text("Answer."))])
+    monkeypatch.setenv("KIPP_CAPTURE", "off")
+
+    assert capture.main(["--file", str(t)]) == 0
+    assert len(spooled()) == 1
+
+
 @pytest.mark.parametrize("payload", [
     "not json",
     json.dumps({"session_id": "s1"}),
