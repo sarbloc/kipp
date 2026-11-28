@@ -912,15 +912,62 @@ def test_turns_carry_their_anchor_offset_and_capture_resumes_there(tmp_path):
     assert all("offset" not in r and capture.OFFSET_KEY not in r for r in spooled())
 
 
-def test_a_line_with_no_end_stops_after_the_skip_budget(tmp_path, monkeypatch):
-    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 1000)
-    monkeypatch.setattr(capture, "MAX_SKIP_BYTES", 10_000)
+def test_a_time_budget_spreads_a_backlog_over_runs(tmp_path, monkeypatch):
+    clock = iter(range(1_000_000))
+    monkeypatch.setattr(capture.time, "monotonic", lambda: next(clock))
     t = tmp_path / "s.jsonl"
-    with open(t, "wb") as f:
-        f.write(json.dumps(user("u-01", "q1")).encode() + b"\n")
-        f.truncate(f.tell() + (1 << 30))  # a sparse 1 GiB with no newline
+    records = []
+    for i in range(10):
+        records += [user(f"u-{i:02d}", f"q{i}"), assistant(f"a-{i:02d}", text(f"r{i}"))]
+    write(t, records)
 
-    assert capture_transcript(t, session_id="s", config=CFG) == 1
+    runs = 0
+    while {r["user"] for r in spooled()} != {f"q{i}" for i in range(10)}:
+        capture_transcript(t, session_id="s", config=CFG, time_budget=5)
+        runs += 1
+        assert runs < 20
+    assert runs > 1
+    last = [r for r in spooled() if r["user"] == "q9"][-1]
+    assert last["assistant"] == "r9"
+
+
+def test_an_oversized_line_past_any_old_byte_budget_is_skipped(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 1000)
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-01", "x" * 3_000_000), user("u-02", "after")])
+
+    assert capture_transcript(t, session_id="s", config=CFG, time_budget=10) == 1
+    assert spooled()[0]["user"] == "after"
+
+
+def test_absurd_tag_nesting_is_bounded():
+    text_ = "<context>" * 100_000 + "kept"
+    assert strip_injected(text_, ("context",)).endswith("kept")
+    closed = "<context>" * 10 + "x" + "</context>" * 10 + "after"
+    assert strip_injected(closed, ("context",)) == "after"
+
+
+def test_oversized_metadata_is_dropped():
+    r = user("u-01", "q")
+    r["timestamp"] = "9" * 10_000
+    r["cwd"] = "/x" * 5000
+    [t] = list(claude_code_turns([r, user("u" * 300, "q2")], session_id="s"))
+    assert t.timestamp == "" and t.cwd == ""
+
+
+def test_spool_batches_are_bounded_by_size(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "SPOOL_BATCH_CHARS", 10_000)
+    writes = []
+    real = capture._append_to_spool
+    monkeypatch.setattr(capture, "_append_to_spool", lambda data: (writes.append(data), real(data)))
+    t = tmp_path / "s.jsonl"
+    records = []
+    for i in range(6):
+        records += [user(f"u-{i:02d}", "y " * 1800), assistant(f"a-{i:02d}", text("ok"))]
+    write(t, records)
+
+    assert capture_transcript(t, session_id="s", config=CFG) == 6
+    assert len(writes) >= 3 and all(len(w) < 20_000 for w in writes)
 
 
 @pytest.mark.parametrize("cwd", ["~\0x", "~\ud800"])

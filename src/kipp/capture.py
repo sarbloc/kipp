@@ -79,6 +79,11 @@ _SECRET_PATTERNS = [
 _PEM_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY-----")
 _PEM_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY-----")
 REDACTED = "[REDACTED]"
+MAX_TAG_DEPTH = 64  # open injected blocks tracked at once; deeper tags are left as text
+# Transcript metadata (timestamp, cwd) longer than this is dropped, and ids
+# longer than MAX_ID_CHARS make a record unusable: real values are far shorter.
+MAX_META_CHARS = 4096
+MAX_ID_CHARS = 256
 # Key the capture loop adds to each transcript record: its byte offset.
 OFFSET_KEY = "_kipp_offset"
 # Redaction sees this much text past the clip point, so a key that starts
@@ -88,9 +93,6 @@ _REDACT_MARGIN = 1024
 # stripping and redaction still see whole blocks and keys; caps memory when an
 # assistant reply runs to thousands of records.
 MAX_SIDE_CHARS = 1 << 20
-# How far past MAX_LINE_BYTES a skipped line is scanned for its end before
-# capture gives up on the transcript for this run.
-MAX_SKIP_BYTES = 256 << 20
 # A transcript line longer than this is skipped unread, so one huge tool
 # output can't exhaust memory. Dialogue is clipped far below it anyway.
 MAX_LINE_BYTES = 16 << 20
@@ -160,6 +162,8 @@ def strip_injected(text: str, tags: Iterable[str] = DEFAULT_STRIP_TAGS, *,
     for m in token.finditer(text):
         name = m.group(2)
         if not m.group(1):
+            if len(stack) >= MAX_TAG_DEPTH:
+                continue  # absurd nesting: treat the tag as text rather than track it
             stack.append((name, m.start(), []))
             open_count[name] += 1
             continue
@@ -275,12 +279,12 @@ def _attachment_markers(content) -> list[str]:
 
 
 def _str(value) -> str:
-    return value if isinstance(value, str) else ""
+    return value if isinstance(value, str) and len(value) <= MAX_META_CHARS else ""
 
 
-def _usable_id(value) -> bool:
-    """A non-empty string that encodes as UTF-8 (JSON can carry lone surrogates)."""
-    if not isinstance(value, str) or not value:
+def _usable_id(value, limit: int = MAX_ID_CHARS) -> bool:
+    """A non-empty, bounded string that encodes as UTF-8 (JSON can carry lone surrogates)."""
+    if not isinstance(value, str) or not value or len(value) > limit:
         return False
     try:
         value.encode("utf-8")
@@ -418,13 +422,20 @@ class TranscriptReader:
     After iterating, ``end`` is the offset just past the last complete line.
     """
 
-    def __init__(self, f, offset: int, name: str = "transcript"):
-        self._f, self.end, self._name = f, offset, name
+    def __init__(self, f, offset: int, name: str = "transcript", deadline: float | None = None):
+        self._f, self.end, self._name, self._deadline = f, offset, name, deadline
+
+    def _out_of_time(self) -> bool:
+        if self._deadline is None or time.monotonic() < self._deadline:
+            return False
+        log.warning("capture time budget used up at byte %d in %s; resuming next run",
+                    self.end, self._name)
+        return True
 
     def __iter__(self) -> Iterator[tuple[int, dict]]:
         f = self._f
         f.seek(self.end)
-        while line := f.readline(MAX_LINE_BYTES + 1):
+        while not self._out_of_time() and (line := f.readline(MAX_LINE_BYTES + 1)):
             start = self.end
             if not line.endswith(b"\n"):
                 if len(line) <= MAX_LINE_BYTES:
@@ -449,18 +460,12 @@ class TranscriptReader:
                 yield start, rec
 
     def _skip_rest(self, length: int) -> int | None:
-        """Read past the rest of an oversized line; its total length, or None at EOF.
-
-        Gives up (None) after ``MAX_SKIP_BYTES``, so a gigantic line (or a
-        sparse file with no newline) can't stall every hook run.
-        """
-        while length < MAX_SKIP_BYTES and (chunk := self._f.readline(1 << 20)):
+        """Read past the rest of an oversized line; its total length, or None at
+        EOF or when the time budget runs out (the line is retried next run)."""
+        while not self._out_of_time() and (chunk := self._f.readline(1 << 20)):
             length += len(chunk)
             if chunk.endswith(b"\n"):
                 return length
-        if length >= MAX_SKIP_BYTES:
-            log.warning("transcript line at byte %d in %s runs past %d bytes; not reading further",
-                        self.end, self._name, MAX_SKIP_BYTES)
         return None
 
 
@@ -736,18 +741,24 @@ class CaptureConfig:
 
 
 SPOOL_BATCH = 500
+SPOOL_BATCH_CHARS = 4 << 20
 HOOK_LOCK_TIMEOUT = 5.0  # seconds a hook waits for another capture before giving up
+HOOK_TIME_BUDGET = 10.0  # seconds a hook spends reading before leaving the rest for next time
 
 
 def capture_transcript(
     transcript: Path, *, session_id: str, cwd: str = "", client: str = "claude-code",
     config: CaptureConfig | None = None, lock_timeout: float | None = None,
+    time_budget: float | None = None,
 ) -> int:
     """Append the turns added to ``transcript`` since the last capture to the spool.
 
     ``lock_timeout`` bounds the wait for another capture to finish (the hook
     passes one, so it never stalls the agent); on timeout nothing is spooled
-    and the next capture picks the turns up.
+    and the next capture picks the turns up. ``time_budget`` bounds the
+    reading: when it runs out, what was read is spooled and the next capture
+    resumes from the last turn, so a huge backlog is caught up over several
+    runs instead of stalling one.
 
     Returns the number of turns spooled. The cursor advances only after the
     spool write succeeds, so a failure re-captures next time rather than
@@ -762,7 +773,8 @@ def capture_transcript(
     adapter = ADAPTERS[client]
     with _Lock(lock_timeout), open_transcript(transcript) as f:
         offset = _read_cursor(client, session_id, transcript, f)
-        reader = TranscriptReader(f, offset, str(transcript))
+        deadline = None if time_budget is None else time.monotonic() + time_budget
+        reader = TranscriptReader(f, offset, str(transcript), deadline)
         def records() -> Iterator[dict]:
             # Each record carries its start offset, which the adapter copies
             # onto the turn it opens, to place the cursor.
@@ -773,16 +785,17 @@ def capture_transcript(
         # Spooled in batches, so a big backlog isn't held in memory. A failure
         # part-way leaves the cursor unmoved and the next run re-spools those
         # turns under the same ids, which the flush deduplicates.
-        count, resume, lines = 0, None, []
+        count, resume, lines, size = 0, None, [], 0
         for t in adapter(records(), session_id=session_id, cwd=cwd, tags=config.strip_tags):
             t.domain = resolve_domain(t.cwd, config.routes, config.default_domain)
             lines.append(json.dumps(t.spool_record(), ensure_ascii=False) + "\n")
+            size += len(lines[-1])
             if t.offset is None:
                 raise RuntimeError(f"the {client} adapter left a turn without its offset")
             count, resume = count + 1, t.offset
-            if len(lines) >= SPOOL_BATCH:
+            if len(lines) >= SPOOL_BATCH or size >= SPOOL_BATCH_CHARS:
                 _append_to_spool("".join(lines))
-                lines = []
+                lines, size = [], 0
         if lines:
             _append_to_spool("".join(lines))
         new_offset = resume if resume is not None else reader.end
@@ -817,12 +830,12 @@ def _run_hook(stdin_text: str) -> int:
     payload = json.loads(stdin_text)
     transcript = payload.get("transcript_path")
     session_id = payload.get("session_id")
-    if not _usable_id(transcript) or not _usable_id(session_id):
+    if not _usable_id(transcript, MAX_META_CHARS) or not _usable_id(session_id):
         log.error("hook payload missing a usable transcript_path or session_id: keys=%s",
                   sorted(payload))
         return 0
     n = capture_transcript(Path(transcript), session_id=session_id, cwd=payload.get("cwd", ""),
-                           lock_timeout=HOOK_LOCK_TIMEOUT)
+                           lock_timeout=HOOK_LOCK_TIMEOUT, time_budget=HOOK_TIME_BUDGET)
     log.info("captured %d turns from %s (%s, %s)", n, transcript, session_id,
              payload.get("hook_event_name", "?"))
     return n
