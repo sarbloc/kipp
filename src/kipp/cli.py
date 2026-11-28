@@ -10,10 +10,12 @@ import httpx
 from qdrant_client.models import FieldCondition, Filter, MatchValue
 
 from kipp.backup import DEFAULT_KEEP, backup_all
+from kipp.config import EVENT_TTL_DAYS
 from kipp.client import (
     DOMAINS,
     collection_name,
     collection_stats,
+    count_events,
     delete_entity,
     ensure_collections,
     get_client,
@@ -78,6 +80,24 @@ def stats():
             click.echo(f"{name}: not created")
         else:
             click.echo(f"{name}: {info['points']} points")
+    click.echo(_capture_summary(client))
+
+
+def _capture_summary(client) -> str:
+    """Captured turns not yet consolidated (they expire unread) and turns not yet flushed."""
+    from kipp.capture import spooled_count
+    from kipp.flush import SOURCE
+
+    waiting = {d: count_events(client, domain=d, source=SOURCE, extracted=False) for d in DOMAINS}
+    total = sum(waiting.values())
+    line = f"captures: {total} unconsolidated"
+    if total:
+        line += " (" + ", ".join(f"{d} {n}" for d, n in waiting.items() if n) + ")"
+    try:
+        spooled = f"{spooled_count()} spooled, not yet flushed"
+    except (OSError, ValueError) as exc:
+        spooled = f"spool unreadable: {exc}"
+    return f"{line}; {spooled}"
 
 
 @main.command()
@@ -281,7 +301,6 @@ def eval_cmd(case_file: Path | None, k: int, as_json: bool):
         click.echo(format_report(results, k))
 
 
-EVENT_TTL_DAYS = 30
 
 
 @main.command()
@@ -306,6 +325,37 @@ def event(text: str, source: str, agent: str, domain: str):
         domain=domain,
     )
     click.echo(f"Logged event: {event_id[:8]}...")
+
+
+@main.group()
+def capture():
+    """Conversation turns captured by the kipp-capture hook."""
+
+
+@capture.command("flush")
+def capture_flush():
+    """Embed spooled turns into their domains' events collections.
+
+    Safe to run on a short cron: an empty spool exits without loading the
+    model, and a turn already stored unchanged isn't written again.
+    """
+    from kipp.flush import flush_spool
+
+    client = get_client()
+    ensure_collections(client)
+    try:
+        r = flush_spool(client, _get_embedder)
+    except (OSError, ValueError, TimeoutError) as exc:
+        raise click.ClickException(f"capture flush failed: {exc}") from exc
+    if r.written:
+        by_domain = ", ".join(f"{d} {n}" for d, n in sorted(r.domains.items()))
+        click.echo(f"Flushed {r.written} turns ({r.new} new, {r.updated} updated; {by_domain}).")
+    else:
+        click.echo("Nothing new to flush.")
+    if r.unchanged:
+        click.echo(f"Skipped {r.unchanged} turns already stored unchanged.")
+    if r.malformed:
+        click.echo(f"Skipped {r.malformed} malformed spool records.", err=True)
 
 
 @main.command()

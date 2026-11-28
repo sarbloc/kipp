@@ -67,6 +67,7 @@ The four kinds:
 | `split.py` | Split oversized entities: `plan_split` (Ward clustering), `move_facts` (target first, never loses a fact), `apply_plan` |
 | `mcp_server.py` | MCP stdio server (`kipp mcp`) exposing operations as tools |
 | `capture.py` | `kipp-capture`: transcript → per-turn spool records (hook path, standard library only, never imports Qdrant or the model) |
+| `flush.py` | `kipp capture flush`: spool → events (`source="capture"`), last copy per id wins, unchanged turns skipped |
 
 ### MCP entrypoint
 
@@ -98,7 +99,7 @@ CLI commands default to `domain="shared"`, so OpenClaw keeps working without mod
 DUPE_THRESHOLD = 0.9
 MAX_FACTS = 20          # kipp compact default only
 SPLIT_THRESHOLD = 30
-EVENT_TTL_DAYS = 30
+EVENT_TTL_DAYS = 30     # config.py
 HALF_LIFE_DAYS = 30
 ```
 

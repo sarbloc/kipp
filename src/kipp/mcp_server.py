@@ -16,6 +16,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from kipp.config import EVENT_TTL_DAYS
 from kipp.client import (
     DOMAINS,
     collection_stats,
@@ -44,7 +45,6 @@ from kipp.pipeline import DEFAULT_BATCH_SIZE, run_extraction
 from kipp.search import format_results, search_entities
 from kipp.split import check_parent, move_facts
 
-EVENT_TTL_DAYS = 30
 # Facts per search hit: always the top SEARCH_FACTS_PER_HIT, then more while the
 # hit's facts stay within SEARCH_FACT_WORDS. Short atomic facts get a deeper
 # window; entities of long facts return the same 10 as before.

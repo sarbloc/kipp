@@ -4,7 +4,7 @@ An MCP server only sees the tool calls made to it, so KIPP can't capture a
 conversation from the server side. Instead a client hook (Claude Code's
 ``Stop`` and ``SessionEnd``) runs ``kipp-capture --hook``, which reads the new
 part of the session transcript and appends one record per turn to a spool
-file. ``kipp capture --flush`` later embeds the spool into the events
+file. ``kipp capture flush`` later embeds the spool into the events
 collections.
 
 This module is the hook path, so it imports only the standard library: no
@@ -676,6 +676,30 @@ def spool_path() -> Path:
     return state_dir() / "spool.jsonl"
 
 
+def flushing_path() -> Path:
+    """Where a flush moves the spool while it embeds it, so hooks can keep appending."""
+    return state_dir() / "spool.flushing.jsonl"
+
+
+def spooled_count() -> int:
+    """Records waiting for a flush (spool plus any interrupted flush), without creating anything.
+
+    A turn re-spooled while it grew counts once per copy.
+    """
+    total = 0
+    for path in (spool_path(), flushing_path()):
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        except FileNotFoundError:
+            continue
+        with os.fdopen(fd, "rb") as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ValueError(f"{path} is not a regular file")
+            while chunk := f.read(1 << 20):
+                total += chunk.count(b"\n")
+    return total
+
+
 def _cursor_path(client: str, session_id: str) -> Path:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{client}-{session_id}")
     return state_dir() / "cursors" / f"{safe}.json"
@@ -760,11 +784,12 @@ class _Lock:
     one spool, so captures are serialised.
     """
 
-    def __init__(self, timeout: float | None = None):
+    def __init__(self, timeout: float | None = None, name: str = "capture.lock"):
         self._timeout = timeout
+        self._name = name
 
     def __enter__(self):
-        self._f = os.fdopen(_open_private(ensure_state_dir() / "capture.lock", os.O_RDWR), "r+b")
+        self._f = os.fdopen(_open_private(ensure_state_dir() / self._name, os.O_RDWR), "r+b")
         try:
             if self._timeout is None:
                 fcntl.flock(self._f, fcntl.LOCK_EX)
@@ -783,7 +808,8 @@ class _Lock:
                 return
             except BlockingIOError:
                 if time.monotonic() >= deadline:
-                    raise TimeoutError(f"capture lock busy for {timeout:g}s") from None
+                    raise TimeoutError(f"{self._name.removesuffix('.lock')} lock busy "
+                                       f"for {timeout:g}s") from None
                 time.sleep(0.05)
 
     def __exit__(self, *exc):

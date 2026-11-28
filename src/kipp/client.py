@@ -374,6 +374,39 @@ def store_event(
     client.upsert(collection_name=collection_name(domain, "events"), points=[point])
 
 
+def event_texts(client: QdrantClient, event_ids: list[str], *, domain: str) -> dict[str, str]:
+    """The stored text of each of ``event_ids`` that exists in the domain's events."""
+    points = client.retrieve(
+        collection_name=collection_name(domain, "events"), ids=event_ids,
+        with_payload=["text"], with_vectors=False,
+    )
+    return {str(p.id): (p.payload or {}).get("text", "") for p in points}
+
+
+def upsert_event_points(client: QdrantClient, points: list[PointStruct], *, domain: str) -> None:
+    """Write already-built event points (id, vector, payload) in one request."""
+    client.upsert(collection_name=collection_name(domain, "events"), points=points)
+
+
+def count_events(
+    client: QdrantClient, *, domain: str, source: str | None = None,
+    extracted: bool | None = None,
+) -> int:
+    """Count a domain's events, optionally by ``source`` and ``extracted``."""
+    coll = collection_name(domain, "events")
+    if not client.collection_exists(coll):
+        return 0
+    conditions = []
+    if source is not None:
+        conditions.append(FieldCondition(key="source", match=MatchValue(value=source)))
+    if extracted is not None:
+        conditions.append(FieldCondition(key="extracted", match=MatchValue(value=extracted)))
+    return client.count(
+        collection_name=coll, count_filter=Filter(must=conditions) if conditions else None,
+        exact=True,
+    ).count
+
+
 def get_unextracted_events(
     client: QdrantClient, since: datetime | None = None, *, domain: str = "shared",
 ) -> list[dict]:
