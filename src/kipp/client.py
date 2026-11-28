@@ -375,13 +375,20 @@ def store_event(
     client.upsert(collection_name=collection_name(domain, "events"), points=[point])
 
 
-def event_supersessions(client: QdrantClient, event_ids: list[str], *, domain: str) -> dict[str, str | None]:
-    """For each of ``event_ids`` that exists in the domain's events, its ``superseded_by`` (or None)."""
+def retired_events(client: QdrantClient, event_ids: list[str], *, domain: str) -> dict[str, bool]:
+    """For each of ``event_ids`` that exists in the domain's events: retired, never resolved?
+
+    Retired means a capture flush replaced it (``superseded_by``); a resolved
+    event (``mark_event_extracted``) counts as handled whatever else happened.
+    """
     points = client.retrieve(
         collection_name=collection_name(domain, "events"), ids=event_ids,
-        with_payload=["superseded_by"], with_vectors=False,
+        with_payload=["superseded_by", "resolved"], with_vectors=False,
     )
-    return {str(p.id): (p.payload or {}).get("superseded_by") for p in points}
+    return {
+        str(p.id): bool((p.payload or {}).get("superseded_by")) and not (p.payload or {}).get("resolved")
+        for p in points
+    }
 
 
 def requeue_events(client: QdrantClient, event_ids: list[str], *, domain: str) -> None:
@@ -490,9 +497,10 @@ def mark_event_extracted(
 
     If ``resolved_into`` is given, also records which entity the event fed
     (provenance) on the event payload, so a resolved event points at the
-    entity created/updated from it.
+    entity created/updated from it. ``resolved`` tells an event a consolidator
+    handled apart from one the capture flush retired (also ``extracted``).
     """
-    payload: dict = {"extracted": True}
+    payload: dict = {"extracted": True, "resolved": True}
     if resolved_into is not None:
         payload["resolved_into"] = resolved_into
     client.set_payload(

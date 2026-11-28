@@ -171,6 +171,55 @@ def test_rewound_turn_requeues_the_text_that_is_current_again(cli_env, embedder)
     assert event(cli_env, rec(1, V2))["superseded_by"] == version_id(rec(1)["id"], V1)
 
 
+def test_rewind_to_a_consolidated_text_retires_the_queued_one(cli_env, embedder):
+    spool(rec(1, V1))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    mark_event_extracted(cli_env, version_id(rec(1)["id"], V1), domain="shared")
+    spool(rec(1, V2))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    spool(rec(1, V1))
+
+    r = flush_spool(cli_env, no_embedder, now=NOW)
+
+    assert (r.unchanged, r.requeued, r.superseded) == (1, 0, 1)
+    assert get_unextracted_events(cli_env) == []
+
+
+def test_resolved_version_is_not_requeued_after_it_was_retired(cli_env, embedder):
+    spool(rec(1, V1))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    (read,) = get_unextracted_events(cli_env)
+    spool(rec(1, V2))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)  # retires V1
+    mark_event_extracted(cli_env, read["id"], domain="shared")  # V1 was handled anyway
+    spool(rec(1, V1))
+
+    r = flush_spool(cli_env, no_embedder, now=NOW)
+
+    assert (r.unchanged, r.requeued, r.superseded) == (1, 0, 1)
+    assert get_unextracted_events(cli_env) == []
+
+
+def test_a_failed_retirement_is_finished_by_the_next_flush(cli_env, embedder, monkeypatch):
+    spool(rec(1, V1))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    spool(rec(1, V2))
+
+    def boom(*a, **k):
+        raise RuntimeError("qdrant went away")
+
+    with monkeypatch.context() as m, pytest.raises(RuntimeError):
+        m.setattr(flush, "mark_events_superseded", boom)
+        flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    assert len(get_unextracted_events(cli_env)) == 2  # both queued, never neither
+
+    r = flush_spool(cli_env, no_embedder, now=NOW)
+
+    assert (r.unchanged, r.superseded) == (1, 1)
+    (left,) = get_unextracted_events(cli_env)
+    assert left["text"] == V2
+
+
 def test_empty_or_missing_spool_never_loads_the_model(cli_env):
     assert flush_spool(cli_env, no_embedder).written == 0
     spool()

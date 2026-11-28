@@ -21,7 +21,12 @@ distinct text of a turn is its own event, ``uuid5(turn id, sha256(text))``:
   place, so resolving an event id acknowledges exactly the text that was
   read, even if a newer version landed meanwhile;
 - a retired version that becomes current again (a rewound transcript) is
-  requeued, and the version it had been replaced by is retired.
+  requeued, unless a consolidator resolved it;
+- every other unextracted version of a turn in the spool is retired, so a
+  flush that failed part-way is finished by the next one.
+
+Where flushes and consolidation race, the cost is a turn consolidated twice
+(which merge deduplicates), never a turn left unconsolidated.
 """
 
 from __future__ import annotations
@@ -42,7 +47,7 @@ from qdrant_client.models import PointStruct
 
 from kipp import capture
 from kipp.client import (
-    event_supersessions,
+    retired_events,
     mark_events_superseded,
     requeue_events,
     unextracted_event_ids_by,
@@ -155,9 +160,9 @@ class _Writer:
     def _write(self, domain: str) -> None:
         batch, self._pending[domain] = self._pending[domain], []
         ids = {r["id"]: version_id(r["id"], r["text"]) for r in batch}
-        stored = event_supersessions(self._client, list(ids.values()), domain=domain)
+        stored = retired_events(self._client, list(ids.values()), domain=domain)
         todo = [r for r in batch if ids[r["id"]] not in stored]
-        revived = [r for r in batch if stored.get(ids[r["id"]])]
+        revived = [ids[r["id"]] for r in batch if stored.get(ids[r["id"]])]
         self._result.unchanged += len(batch) - len(todo) - len(revived)
         if todo:
             if self._embedder is None:  # loaded only when something needs embedding
@@ -168,17 +173,13 @@ class _Writer:
             upsert_event_points(self._client, points, domain=domain)
             self._result.written += len(todo)
             self._result.domains[domain] += len(todo)
-        requeue_events(self._client, [ids[r["id"]] for r in revived], domain=domain)
+        requeue_events(self._client, revived, domain=domain)
         self._result.requeued += len(revived)
-        changed = todo + revived
-        if not changed:
-            return
         # The current versions are queued first, then the others retired: a
         # failure in between leaves both queued (a duplicate to consolidate),
         # never neither.
-        current = {ids[r["id"]] for r in changed}
-        older = unextracted_event_ids_by(self._client, "turn_id", [r["id"] for r in changed],
-                                         domain=domain)
+        current = set(ids.values())
+        older = unextracted_event_ids_by(self._client, "turn_id", list(ids), domain=domain)
         superseded = {eid: ids[tid] for eid, tid in older if eid not in current and tid in ids}
         mark_events_superseded(self._client, superseded, domain=domain)
         self._result.superseded += len(superseded)
