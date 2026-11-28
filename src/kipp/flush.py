@@ -94,10 +94,10 @@ def naive_utc(timestamp: str) -> str | None:
     """
     try:
         dt = datetime.fromisoformat(timestamp)
-    except (TypeError, ValueError):
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    except (TypeError, ValueError, OverflowError):  # e.g. year 1 at +01:00 has no UTC form
         return None
-    if dt.tzinfo is not None:
-        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
     return dt.isoformat()
 
 

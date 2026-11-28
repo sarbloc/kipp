@@ -297,15 +297,19 @@ def test_spool_with_loose_permissions_is_refused(cli_env):
     ("2026-11-27T10:00:00", "2026-11-27T10:00:00"),
     ("", None),
     ("yesterday", None),
+    ("0001-01-01T00:00:00+01:00", None),
+    ("9999-12-31T23:59:59-01:00", None),
 ])
 def test_timestamps_become_naive_utc(ts, want):
     assert naive_utc(ts) == want
 
 
-def test_unparseable_timestamp_falls_back_to_now(cli_env, embedder):
-    spool(rec(1, timestamp="garbage"))
+@pytest.mark.parametrize("ts", ["garbage", "0001-01-01T00:00:00+01:00"])
+def test_unusable_timestamp_falls_back_to_now(cli_env, embedder, ts):
+    spool(rec(1, timestamp=ts))
     flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
     assert event(cli_env, rec(1))["timestamp"] == NOW.isoformat()
+    assert not capture.flushing_path().exists()
 
 
 def test_captured_events_work_with_the_since_filter(cli_env, embedder):
