@@ -86,8 +86,9 @@ MAX_META_CHARS = 4096
 MAX_ID_CHARS = 256
 # Key the capture loop adds to each transcript record: its byte offset.
 OFFSET_KEY = "_kipp_offset"
-# Record type the capture loop sends the adapter when reading stopped early.
-CUT_RECORD = "_kipp_cut"
+# Record type standing in for transcript content that wasn't read: a skipped
+# line, or the rest of the file when the time budget ran out.
+GAP_RECORD = "_kipp_gap"
 # Redaction sees this much text past the clip point, so a key that starts
 # before the clip is matched whole. Longer than any single-line key.
 _REDACT_MARGIN = 1024
@@ -344,6 +345,7 @@ def claude_code_turns(
 
     ``mid_turn`` means the records start part-way through a turn: assistant
     text before the first user message is dropped, not captured unprompted.
+    A ``GAP_RECORD`` (content that wasn't read) ends the open turn the same way.
     """
     tags = tuple(tags)
     turn: dict | None = None
@@ -363,9 +365,16 @@ def claude_code_turns(
 
     for r in records:
         kind = r.get("type")
-        if kind == CUT_RECORD:  # reading stopped here: the open turn may be incomplete
+        if kind == GAP_RECORD:
+            # Content here wasn't read, so what follows may sit inside a block
+            # (a key, an injected tag) that opened in it. End the turn as cut
+            # and drop assistant text until the next user message.
             if turn is not None:
                 turn["cut"] = True
+                done = finish(turn)
+                if done:
+                    yield done
+            turn, mid_turn = None, True
             continue
         if kind not in ("user", "assistant") or any(r.get(f) for f in _SKIP_FLAGS):
             continue
@@ -464,6 +473,7 @@ class TranscriptReader:
                 self.end += length
                 log.warning("skipping a %d-byte transcript line at byte %d in %s",
                             length, start, self._name)
+                yield start, {"type": GAP_RECORD}
                 continue
             self.end += len(line)
             if not line.strip():
@@ -473,6 +483,7 @@ class TranscriptReader:
             except (ValueError, RecursionError):  # bad JSON, bad UTF-8, absurd nesting
                 log.warning("skipping malformed transcript line at byte %d in %s",
                             start, self._name)
+                yield start, {"type": GAP_RECORD}
                 continue
             if isinstance(rec, dict):
                 yield start, rec
@@ -750,7 +761,7 @@ class CaptureConfig:
 
     @classmethod
     def load(cls) -> CaptureConfig:
-        raw = load_config().get("capture", {}) or {}
+        raw = load_config(regular_only=True).get("capture", {}) or {}
         routes = dict(raw.get("domains", {}) or {})
         default = raw.get("default_domain", "shared")
         for domain in [*routes.values(), default]:
@@ -800,14 +811,17 @@ def capture_transcript(
         offset, mid_turn = _read_cursor(client, session_id, transcript, f)
         deadline = None if time_budget is None else time.monotonic() + time_budget
         reader = TranscriptReader(f, offset, str(transcript), deadline)
+        gaps = [False]  # whether a skipped line went past
+
         def records() -> Iterator[dict]:
             # Each record carries its start offset, which the adapter copies
             # onto the turn it opens, to place the cursor.
             for start, rec in reader:
                 rec[OFFSET_KEY] = start
+                gaps[0] |= rec.get("type") == GAP_RECORD
                 yield rec
             if reader.timed_out:
-                yield {"type": CUT_RECORD}
+                yield {"type": GAP_RECORD}
 
         # Spooled in batches, so a big backlog isn't held in memory. A failure
         # part-way leaves the cursor unmoved and the next run re-spools those
@@ -827,8 +841,8 @@ def capture_transcript(
         if lines:
             _append_to_spool("".join(lines))
         new_offset = resume if resume is not None else reader.end
-        # Still inside that turn until a turn is seen to start.
-        new_mid_turn = mid_turn and resume is None
+        # Still inside a turn (or after a gap) until a turn is seen to start.
+        new_mid_turn = (mid_turn or gaps[0]) and resume is None
         if reader.timed_out and new_offset == offset and reader.end > offset:
             # One turn outran the whole budget: resuming at its start would
             # never get further. Move on, and drop the rest of that turn next

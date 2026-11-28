@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
 DOMAINS = ["shared", "dev", "personal"]
@@ -45,7 +46,26 @@ def _config_search_paths() -> list[Path]:
     ]
 
 
-def load_config() -> dict:
+_MAX_CONFIG_BYTES = 1 << 20
+
+
+def _read_json(path: Path, regular_only: bool):
+    """Parse a config file. ``regular_only`` refuses FIFOs and devices without
+    blocking on them, and bounds the read: for callers that must never hang."""
+    if not regular_only:
+        with open(path) as f:
+            return json.load(f)
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ValueError(f"config {path} is not a regular file")
+        data = f.read(_MAX_CONFIG_BYTES + 1)
+    if len(data) > _MAX_CONFIG_BYTES:
+        raise ValueError(f"config {path} is over {_MAX_CONFIG_BYTES} bytes")
+    return json.loads(data)
+
+
+def load_config(regular_only: bool = False) -> dict:
     """Resolve Qdrant config from env vars and standard file locations.
 
     Precedence, highest first:
@@ -60,6 +80,9 @@ def load_config() -> dict:
     4. ``~/.config/entity-memory/config.json`` — pre-rename location.
     5. ``~/.openclaw/memory.json`` — legacy OpenClaw path, kept for back-compat.
     6. Built-in defaults (localhost Qdrant).
+
+    ``regular_only`` makes reading the file safe for a hook that must not
+    hang (see ``_read_json``).
 
     The chosen config file's top-level keys overlay the defaults; ``QDRANT_URL``
     then overrides the resolved url, so a deployment can point at a different
@@ -76,8 +99,7 @@ def load_config() -> dict:
     if explicit:
         explicit_path = Path(explicit)
         if explicit_path.exists():
-            with open(explicit_path) as f:
-                config.update(json.load(f))
+            config.update(_read_json(explicit_path, regular_only))
         elif not url_override:
             # Operator pointed at a config we can't read and gave no QDRANT_URL
             # to fall back on — abort rather than silently using another Qdrant.
@@ -90,8 +112,7 @@ def load_config() -> dict:
     else:
         for path in _config_search_paths():
             if path.exists():
-                with open(path) as f:
-                    config.update(json.load(f))
+                config.update(_read_json(path, regular_only))
                 break
     if url_override:
         config.setdefault("qdrant", {})["url"] = url_override

@@ -1048,3 +1048,43 @@ def test_injection_split_across_user_text_blocks_opens_no_turn():
                assistant("a-02", text("part two"))]
     [t] = list(claude_code_turns(records, session_id="s"))
     assert t.user == "q" and t.assistant == "part one\n\npart two"
+
+
+def test_a_skipped_line_ends_the_turn_and_drops_its_continuation(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 2000)
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-00", "q0"), assistant("a-00", text("before")),
+              assistant("a-01", text("x" * 5000 + "-----BEGIN PRIVATE KEY-----")),
+              assistant("a-02", text("KEYBODY\n-----END PRIVATE KEY-----")),
+              user("u-01", "q1"), assistant("a-03", text("r1"))])
+
+    capture_transcript(t, session_id="s", config=CFG)
+    texts = " ".join(r["text"] for r in spooled())
+    assert "KEYBODY" not in texts
+    assert "before" in texts and "q1" in texts and "r1" in texts
+
+
+def test_a_gap_with_no_later_turn_carries_over_to_the_next_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(capture, "MAX_LINE_BYTES", 2000)
+    t = tmp_path / "s.jsonl"
+    write(t, [assistant("a-01", text("x" * 5000)), assistant("a-02", text("KEYBODY one"))])
+    capture_transcript(t, session_id="s", config=CFG)
+    append(t, [assistant("a-03", text("KEYBODY two")), user("u-01", "q1")])
+    capture_transcript(t, session_id="s", config=CFG)
+
+    texts = " ".join(r["text"] for r in spooled())
+    assert "KEYBODY" not in texts and "q1" in texts
+
+
+def test_a_fifo_config_does_not_hang_the_hook(tmp_path):
+    fifo = tmp_path / "config.fifo"
+    os.mkfifo(fifo)
+    t = tmp_path / "s1.jsonl"
+    write(t, [user("u-01", "q1")])
+    env = {**os.environ, "PYTHONPATH": str(Path(capture.__file__).parents[1]),
+           "XDG_STATE_HOME": str(tmp_path / "state"), "KIPP_CONFIG": str(fifo)}
+    payload = json.dumps({"transcript_path": str(t), "session_id": "s1"})
+
+    out = subprocess.run([sys.executable, "-m", "kipp.capture", "--hook"], input=payload,
+                         capture_output=True, text=True, timeout=10, env=env)
+    assert out.returncode == 0
