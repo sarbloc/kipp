@@ -1184,3 +1184,16 @@ def test_tool_only_messages_are_not_gaps():
                assistant("a-02", text("two"))]
     [t] = list(claude_code_turns(records, session_id="s"))
     assert t.assistant == "one\n\ntwo"
+
+
+def test_a_symlink_chain_through_a_world_writable_dir_is_refused(tmp_path, monkeypatch):
+    shared, private = tmp_path / "shared", tmp_path / "private"
+    (shared / "bridge").mkdir(parents=True)
+    private.mkdir()
+    os.chmod(shared, 0o777)
+    (shared / "bridge" / "back").symlink_to(private)
+    (tmp_path / "front").symlink_to(shared / "bridge")
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "front" / "back" / "state"))
+
+    with pytest.raises(ValueError, match="world-writable"):
+        capture.ensure_state_dir()

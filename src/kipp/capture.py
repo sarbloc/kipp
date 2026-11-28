@@ -558,8 +558,13 @@ def ensure_state_dir() -> Path:
     base = d.parent.parent
     base.mkdir(parents=True, exist_ok=True)
     _owned_dir(base, mine=False)
-    real = Path(os.path.realpath(base))
-    for ancestor in {base, *base.parents, real, *real.parents}:
+    # Every prefix as written and as resolved, with all its parents, so a
+    # symlink chain can't route the path through an unchecked directory.
+    chain: set[Path] = set()
+    for prefix in (base, *base.parents):
+        real = Path(os.path.realpath(prefix))
+        chain.update((prefix, real, *real.parents))
+    for ancestor in chain:
         for st in (os.lstat(ancestor), os.stat(ancestor)):  # a symlink itself, then its target
             if st.st_uid not in (os.getuid(), 0):
                 raise ValueError(f"{ancestor} is owned by uid {st.st_uid}; refusing to write "
