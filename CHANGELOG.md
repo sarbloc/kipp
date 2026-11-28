@@ -7,6 +7,15 @@ All notable changes to KIPP are recorded here. The format follows
 ## [Unreleased]
 
 ### Added
+- `kipp-capture`, a Claude Code hook command that spools each conversation
+  turn (the user's message and the assistant's prose) from the session
+  transcript. Tool calls and output, thinking, subagent messages and injected
+  context are dropped. Known secret formats are redacted, and each side is
+  clipped at 4,000 characters. It reads only new transcript bytes, spends at
+  most 10 seconds per run (a backlog is caught up over several), never
+  imports Qdrant or the model, and always exits 0 in hook mode. The spool and
+  its state live in `$XDG_STATE_HOME/kipp/capture`, private to the user.
+  Flushing the spool into events comes next (#71).
 - `kipp export --domain shared|dev|personal|all` (default `shared`). JSON
   records now carry a `domain` field, and markdown groups by domain when
   exporting several (#65).
