@@ -156,6 +156,21 @@ def test_resolving_a_version_read_before_an_update_leaves_the_update_queued(cli_
     assert left["text"] == V2
 
 
+def test_rewound_turn_requeues_the_text_that_is_current_again(cli_env, embedder):
+    spool(rec(1, V1))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    spool(rec(1, V2))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)  # V1 retired
+    spool(rec(1, V1))  # the transcript was rewound
+
+    r = flush_spool(cli_env, no_embedder, now=NOW)
+
+    assert (r.written, r.requeued, r.superseded, r.unchanged) == (0, 1, 1, 0)
+    (left,) = get_unextracted_events(cli_env)
+    assert left["text"] == V1 and "superseded_by" not in left
+    assert event(cli_env, rec(1, V2))["superseded_by"] == version_id(rec(1)["id"], V1)
+
+
 def test_empty_or_missing_spool_never_loads_the_model(cli_env):
     assert flush_spool(cli_env, no_embedder).written == 0
     spool()

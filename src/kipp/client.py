@@ -375,13 +375,22 @@ def store_event(
     client.upsert(collection_name=collection_name(domain, "events"), points=[point])
 
 
-def existing_event_ids(client: QdrantClient, event_ids: list[str], *, domain: str) -> set[str]:
-    """Which of ``event_ids`` exist in the domain's events."""
+def event_supersessions(client: QdrantClient, event_ids: list[str], *, domain: str) -> dict[str, str | None]:
+    """For each of ``event_ids`` that exists in the domain's events, its ``superseded_by`` (or None)."""
     points = client.retrieve(
         collection_name=collection_name(domain, "events"), ids=event_ids,
-        with_payload=False, with_vectors=False,
+        with_payload=["superseded_by"], with_vectors=False,
     )
-    return {str(p.id) for p in points}
+    return {str(p.id): (p.payload or {}).get("superseded_by") for p in points}
+
+
+def requeue_events(client: QdrantClient, event_ids: list[str], *, domain: str) -> None:
+    """Put retired events back in the consolidation queue (unextracted, no ``superseded_by``)."""
+    if not event_ids:
+        return
+    coll = collection_name(domain, "events")
+    client.set_payload(collection_name=coll, payload={"extracted": False}, points=event_ids)
+    client.delete_payload(collection_name=coll, keys=["superseded_by"], points=event_ids)
 
 
 def unextracted_event_ids_by(

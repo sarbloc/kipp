@@ -19,7 +19,9 @@ distinct text of a turn is its own event, ``uuid5(turn id, sha256(text))``:
 - a changed turn is a new event, and older versions still unextracted are
   marked extracted with ``superseded_by``. Events are never rewritten in
   place, so resolving an event id acknowledges exactly the text that was
-  read, even if a newer version landed meanwhile.
+  read, even if a newer version landed meanwhile;
+- a retired version that becomes current again (a rewound transcript) is
+  requeued, and the version it had been replaced by is retired.
 """
 
 from __future__ import annotations
@@ -40,8 +42,9 @@ from qdrant_client.models import PointStruct
 
 from kipp import capture
 from kipp.client import (
-    existing_event_ids,
+    event_supersessions,
     mark_events_superseded,
+    requeue_events,
     unextracted_event_ids_by,
     upsert_event_points,
 )
@@ -63,6 +66,7 @@ class FlushResult:
     written: int = 0  # event versions stored
     unchanged: int = 0  # turns whose current text was already stored
     superseded: int = 0  # older unextracted versions retired
+    requeued: int = 0  # retired versions current again
     malformed: int = 0
     domains: Counter = field(default_factory=Counter)  # written per domain
 
@@ -151,25 +155,31 @@ class _Writer:
     def _write(self, domain: str) -> None:
         batch, self._pending[domain] = self._pending[domain], []
         ids = {r["id"]: version_id(r["id"], r["text"]) for r in batch}
-        stored = existing_event_ids(self._client, list(ids.values()), domain=domain)
+        stored = event_supersessions(self._client, list(ids.values()), domain=domain)
         todo = [r for r in batch if ids[r["id"]] not in stored]
-        self._result.unchanged += len(batch) - len(todo)
-        if not todo:
+        revived = [r for r in batch if stored.get(ids[r["id"]])]
+        self._result.unchanged += len(batch) - len(todo) - len(revived)
+        if todo:
+            if self._embedder is None:  # loaded only when something needs embedding
+                self._embedder = self._get_embedder()
+            vectors = self._embedder.embed_batch([r["text"] for r in todo])
+            points = [PointStruct(id=ids[r["id"]], vector=v, payload=_payload(r, self._now))
+                      for r, v in zip(todo, vectors, strict=True)]
+            upsert_event_points(self._client, points, domain=domain)
+            self._result.written += len(todo)
+            self._result.domains[domain] += len(todo)
+        requeue_events(self._client, [ids[r["id"]] for r in revived], domain=domain)
+        self._result.requeued += len(revived)
+        changed = todo + revived
+        if not changed:
             return
-        if self._embedder is None:  # loaded only when something needs embedding
-            self._embedder = self._get_embedder()
-        vectors = self._embedder.embed_batch([r["text"] for r in todo])
-        points = [PointStruct(id=ids[r["id"]], vector=v, payload=_payload(r, self._now))
-                  for r, v in zip(todo, vectors, strict=True)]
-        upsert_event_points(self._client, points, domain=domain)
-        self._result.written += len(todo)
-        self._result.domains[domain] += len(todo)
-        # Written first, then the old versions retired: a failure in between
-        # leaves both queued (a duplicate to consolidate), never neither.
-        written = {ids[r["id"]] for r in todo}
-        older = unextracted_event_ids_by(self._client, "turn_id", [r["id"] for r in todo],
+        # The current versions are queued first, then the others retired: a
+        # failure in between leaves both queued (a duplicate to consolidate),
+        # never neither.
+        current = {ids[r["id"]] for r in changed}
+        older = unextracted_event_ids_by(self._client, "turn_id", [r["id"] for r in changed],
                                          domain=domain)
-        superseded = {eid: ids[tid] for eid, tid in older if eid not in written and tid in ids}
+        superseded = {eid: ids[tid] for eid, tid in older if eid not in current and tid in ids}
         mark_events_superseded(self._client, superseded, domain=domain)
         self._result.superseded += len(superseded)
 

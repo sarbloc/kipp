@@ -18,7 +18,8 @@ All notable changes to KIPP are recorded here. The format follows
 - `kipp capture flush` embeds the spool into each turn's domain's events
   (`source="capture"`). Each text of a turn is its own event, so a turn
   already stored unchanged is skipped, and an updated turn is queued as a new
-  event, retiring an older version not yet consolidated. Events are never
+  event, retiring an older version not yet consolidated (and requeueing a
+  retired version that a rewound transcript makes current again). Events are never
   rewritten, so resolving one acknowledges exactly the text that was read.
   An empty spool exits without loading the model, so it's cheap on a
   short cron. Hooks keep appending while it runs. `kipp stats` now reports

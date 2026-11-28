@@ -352,6 +352,8 @@ def capture_flush():
         click.echo(f"Flushed {r.written} turns ({by_domain}).")
     else:
         click.echo("Nothing new to flush.")
+    if r.requeued:
+        click.echo(f"Requeued {r.requeued} turns whose earlier text is current again.")
     if r.superseded:
         click.echo(f"Retired {r.superseded} older unconsolidated versions of updated turns.")
     if r.unchanged:
