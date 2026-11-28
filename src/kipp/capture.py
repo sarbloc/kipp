@@ -89,8 +89,8 @@ OFFSET_KEY = "_kipp_offset"
 # Record type standing in for transcript content that wasn't read: a skipped
 # line, or the rest of the file when the time budget ran out.
 GAP_RECORD = "_kipp_gap"
-# Record type for "the open turn continues in a line not written yet": its
-# text so far is treated as cut short, but the turn isn't ended.
+# Record type for "the open turn may continue in lines not read yet": its text
+# so far is treated as cut short, but the turn isn't ended.
 CUT_RECORD = "_kipp_cut"
 # Redaction sees this much text past the clip point, so a key that starts
 # before the clip is matched whole. Longer than any single-line key.
@@ -478,7 +478,6 @@ class TranscriptReader:
     def __init__(self, f, offset: int, name: str = "transcript", deadline: float | None = None):
         self._f, self.end, self._name, self._deadline = f, offset, name, deadline
         self.timed_out = False
-        self.partial = False  # stopped at a line still being written
 
     def _out_of_time(self) -> bool:
         if self._deadline is None or time.monotonic() < self._deadline:
@@ -495,13 +494,11 @@ class TranscriptReader:
             start = self.end
             if not line.endswith(b"\n"):
                 if len(line) <= MAX_LINE_BYTES:
-                    self.partial = True
                     return  # partial last line
                 length, complete = self._skip_rest(len(line))
                 if not complete:
                     if self.timed_out:  # keep the progress; the next run skips on from here
                         self.end += length
-                    self.partial = True
                     return  # else oversized and still being written
                 self.end += length
                 log.warning("skipping a %d-byte transcript line at byte %d in %s",
@@ -594,7 +591,8 @@ def _traversed(path: Path) -> set[Path]:
     following each link step by step (``realpath`` would skip the
     intermediate targets of a chain)."""
     cur, seen, links = Path("/"), {Path("/")}, 0
-    parts = deque(Path(os.path.abspath(path)).parts[1:])
+    # Raw parts, not abspath: ``link/..`` must go up from the link's target.
+    parts = deque(Path(os.getcwd(), path).parts[1:])
     while parts:
         name = parts.popleft()
         if name in ("", "."):
@@ -895,10 +893,10 @@ def capture_transcript(
             for start, rec in reader:
                 rec[OFFSET_KEY] = start
                 yield rec
-            if reader.timed_out:
-                yield {"type": GAP_RECORD}
-            elif reader.partial:
-                yield {"type": CUT_RECORD}
+            # The last turn may still be growing (a reply or an injected block
+            # still to come), so its text so far counts as cut short. It's
+            # re-spooled whole next run.
+            yield {"type": GAP_RECORD if reader.timed_out else CUT_RECORD}
 
         # Spooled in batches, so a big backlog isn't held in memory. A failure
         # part-way leaves the cursor unmoved and the next run re-spools those

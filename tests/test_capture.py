@@ -1227,3 +1227,25 @@ def test_a_partial_closing_record_marks_the_turn_cut(tmp_path):
 
     capture_transcript(t, session_id="s", config=CFG)
     assert "PRIVATE" not in spooled()[-1]["text"]
+
+
+def test_an_unfinished_block_at_a_line_boundary_is_not_spooled(tmp_path):
+    t = tmp_path / "s.jsonl"
+    write(t, [user("u-00", "q0"), assistant("a-00", text("Answer <context>PRIVATE"))])
+    capture_transcript(t, session_id="s", config=CFG)
+    append(t, [assistant("a-01", text("</context> more")), user("u-01", "q1")])
+    capture_transcript(t, session_id="s", config=CFG)
+
+    assert "PRIVATE" not in " ".join(r["text"] for r in spooled())
+    final = [r["assistant"] for r in spooled() if r["user"] == "q0"][-1]
+    assert final.startswith("Answer") and final.endswith("more")
+
+
+def test_dotdot_after_a_symlink_goes_up_from_its_target(tmp_path):
+    (tmp_path / "safe").mkdir()
+    (tmp_path / "unsafe" / "child").mkdir(parents=True)
+    (tmp_path / "unsafe" / "state").mkdir()
+    (tmp_path / "safe" / "link").symlink_to(tmp_path / "unsafe" / "child")
+    seen = capture._traversed(tmp_path / "safe" / "link" / ".." / "state")
+    assert tmp_path / "unsafe" / "state" in seen
+    assert tmp_path / "safe" / "state" not in seen
