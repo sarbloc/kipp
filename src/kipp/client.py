@@ -26,6 +26,7 @@ from qdrant_client.models import (
     FieldCondition,
     Filter,
     FilterSelector,
+    MatchAny,
     MatchValue,
     PayloadSchemaType,
     PointStruct,
@@ -374,18 +375,51 @@ def store_event(
     client.upsert(collection_name=collection_name(domain, "events"), points=[point])
 
 
-def event_texts(client: QdrantClient, event_ids: list[str], *, domain: str) -> dict[str, str]:
-    """The stored text of each of ``event_ids`` that exists in the domain's events."""
+def existing_event_ids(client: QdrantClient, event_ids: list[str], *, domain: str) -> set[str]:
+    """Which of ``event_ids`` exist in the domain's events."""
     points = client.retrieve(
         collection_name=collection_name(domain, "events"), ids=event_ids,
-        with_payload=["text"], with_vectors=False,
+        with_payload=False, with_vectors=False,
     )
-    return {str(p.id): (p.payload or {}).get("text", "") for p in points}
+    return {str(p.id) for p in points}
+
+
+def unextracted_event_ids_by(
+    client: QdrantClient, key: str, values: list[str], *, domain: str,
+) -> list[tuple[str, str]]:
+    """``(event id, value)`` for unextracted events whose payload ``key`` is in ``values``."""
+    flt = Filter(must=[
+        FieldCondition(key=key, match=MatchAny(any=values)),
+        FieldCondition(key="extracted", match=MatchValue(value=False)),
+    ])
+    found, offset = [], None
+    while True:
+        points, offset = client.scroll(
+            collection_name=collection_name(domain, "events"), scroll_filter=flt,
+            limit=256, offset=offset, with_payload=[key], with_vectors=False,
+        )
+        found += [(str(p.id), (p.payload or {}).get(key)) for p in points]
+        if offset is None:
+            return found
 
 
 def upsert_event_points(client: QdrantClient, points: list[PointStruct], *, domain: str) -> None:
     """Write already-built event points (id, vector, payload) in one request."""
     client.upsert(collection_name=collection_name(domain, "events"), points=points)
+
+
+def mark_events_superseded(client: QdrantClient, superseded: dict[str, str], *, domain: str) -> None:
+    """Retire unextracted events replaced by a newer version: ``{old id: new id}``.
+
+    They're marked extracted (so consolidation skips them) with
+    ``superseded_by``; nothing is deleted, so a consolidator resolving an old
+    id it already read still finds it.
+    """
+    for old, new in superseded.items():
+        client.set_payload(
+            collection_name=collection_name(domain, "events"),
+            payload={"extracted": True, "superseded_by": new}, points=[old],
+        )
 
 
 def count_events(

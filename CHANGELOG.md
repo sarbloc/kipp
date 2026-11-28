@@ -16,9 +16,11 @@ All notable changes to KIPP are recorded here. The format follows
   imports Qdrant or the model, and always exits 0 in hook mode. The spool and
   its state live in `$XDG_STATE_HOME/kipp/capture`, private to the user.
 - `kipp capture flush` embeds the spool into each turn's domain's events
-  (`source="capture"`). The last copy of a re-spooled turn wins. A turn
-  already stored unchanged isn't rewritten, so consolidation doesn't see it
-  twice. An empty spool exits without loading the model, so it's cheap on a
+  (`source="capture"`). Each text of a turn is its own event, so a turn
+  already stored unchanged is skipped, and an updated turn is queued as a new
+  event, retiring an older version not yet consolidated. Events are never
+  rewritten, so resolving one acknowledges exactly the text that was read.
+  An empty spool exits without loading the model, so it's cheap on a
   short cron. Hooks keep appending while it runs. `kipp stats` now reports
   captured turns not yet consolidated (they expire after 30 days like any
   event) and turns spooled but not flushed (#71).

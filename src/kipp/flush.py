@@ -11,14 +11,20 @@ unlocked. The moved file is deleted only once every record is written; a
 flush that fails part-way leaves it, and the next flush finishes it first.
 
 Each hook run re-spools the session's last turn, which may still be growing,
-under the same id. So the last copy of an id wins, and a turn whose text
-matches the stored event is skipped: not re-embedded, and not reset to
-unextracted when consolidation has already handled it. A turn that did change
-is stored as unextracted, so consolidation sees the complete version.
+under the same turn id, so the last copy of a turn in the spool wins. Each
+distinct text of a turn is its own event, ``uuid5(turn id, sha256(text))``:
+
+- an unchanged turn maps to an existing event and is skipped, so a turn
+  consolidation already handled isn't queued again;
+- a changed turn is a new event, and older versions still unextracted are
+  marked extracted with ``superseded_by``. Events are never rewritten in
+  place, so resolving an event id acknowledges exactly the text that was
+  read, even if a newer version landed meanwhile.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -33,7 +39,12 @@ from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 
 from kipp import capture
-from kipp.client import event_texts, upsert_event_points
+from kipp.client import (
+    existing_event_ids,
+    mark_events_superseded,
+    unextracted_event_ids_by,
+    upsert_event_points,
+)
 from kipp.config import DOMAINS, EVENT_TTL_DAYS
 
 log = logging.getLogger("kipp.flush")
@@ -49,15 +60,17 @@ _FIELDS = ("id", "text", "domain", "session_id", "client", "cwd", "timestamp")
 
 @dataclass
 class FlushResult:
-    new: int = 0
-    updated: int = 0
-    unchanged: int = 0
+    written: int = 0  # event versions stored
+    unchanged: int = 0  # turns whose current text was already stored
+    superseded: int = 0  # older unextracted versions retired
     malformed: int = 0
-    domains: Counter = field(default_factory=Counter)  # new + updated per domain
+    domains: Counter = field(default_factory=Counter)  # written per domain
 
-    @property
-    def written(self) -> int:
-        return self.new + self.updated
+
+def version_id(turn_id: str, text: str) -> str:
+    """The event id for one text of a turn; a changed text is a new event."""
+    digest = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+    return str(uuid.uuid5(uuid.UUID(turn_id), digest))
 
 
 def _utcnow() -> datetime:
@@ -108,6 +121,7 @@ def _payload(rec: dict, now: datetime) -> dict:
         "session_id": rec["session_id"],
         "client": rec["client"],
         "cwd": rec["cwd"],
+        "turn_id": rec["id"],
     }
 
 
@@ -136,21 +150,28 @@ class _Writer:
 
     def _write(self, domain: str) -> None:
         batch, self._pending[domain] = self._pending[domain], []
-        stored = event_texts(self._client, [r["id"] for r in batch], domain=domain)
-        todo = [r for r in batch if stored.get(r["id"]) != r["text"]]
+        ids = {r["id"]: version_id(r["id"], r["text"]) for r in batch}
+        stored = existing_event_ids(self._client, list(ids.values()), domain=domain)
+        todo = [r for r in batch if ids[r["id"]] not in stored]
         self._result.unchanged += len(batch) - len(todo)
         if not todo:
             return
         if self._embedder is None:  # loaded only when something needs embedding
             self._embedder = self._get_embedder()
         vectors = self._embedder.embed_batch([r["text"] for r in todo])
-        points = [PointStruct(id=r["id"], vector=v, payload=_payload(r, self._now))
+        points = [PointStruct(id=ids[r["id"]], vector=v, payload=_payload(r, self._now))
                   for r, v in zip(todo, vectors, strict=True)]
         upsert_event_points(self._client, points, domain=domain)
-        updated = sum(r["id"] in stored for r in todo)
-        self._result.updated += updated
-        self._result.new += len(todo) - updated
+        self._result.written += len(todo)
         self._result.domains[domain] += len(todo)
+        # Written first, then the old versions retired: a failure in between
+        # leaves both queued (a duplicate to consolidate), never neither.
+        written = {ids[r["id"]] for r in todo}
+        older = unextracted_event_ids_by(self._client, "turn_id", [r["id"] for r in todo],
+                                         domain=domain)
+        superseded = {eid: ids[tid] for eid, tid in older if eid not in written and tid in ids}
+        mark_events_superseded(self._client, superseded, domain=domain)
+        self._result.superseded += len(superseded)
 
 
 def _flush_file(path: Path, writer: _Writer, result: FlushResult) -> None:

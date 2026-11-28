@@ -11,7 +11,7 @@ from click.testing import CliRunner
 import kipp.cli as cli_mod
 from kipp import capture, flush
 from kipp.client import collection_name, get_unextracted_events, mark_event_extracted
-from kipp.flush import flush_spool, naive_utc
+from kipp.flush import flush_spool, naive_utc, version_id
 
 NOW = datetime(2026, 11, 28, 8, 0, 0)
 
@@ -42,7 +42,8 @@ def spool(*records, raw: str = "") -> None:
 
 
 def event(client, r: dict, domain: str = "shared"):
-    points = client.retrieve(collection_name(domain, "events"), [r["id"]], with_payload=True)
+    vid = version_id(r["id"], r["text"])
+    points = client.retrieve(collection_name(domain, "events"), [vid], with_payload=True)
     return points[0].payload if points else None
 
 
@@ -71,11 +72,12 @@ def test_flush_writes_each_turn_to_its_domain_and_empties_the_spool(cli_env, emb
 
     r = flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
 
-    assert (r.new, r.updated, r.unchanged) == (2, 0, 0)
+    assert (r.written, r.unchanged, r.superseded) == (2, 0, 0)
     assert dict(r.domains) == {"shared": 1, "dev": 1}
     p = event(cli_env, a)
     assert p["text"] == a["text"] and p["source"] == "capture" and p["extracted"] is False
     assert p["session_id"] == "s1" and p["client"] == "claude-code" and p["cwd"] == "/home/u/dev/app"
+    assert p["turn_id"] == a["id"]
     assert p["timestamp"] == "2026-11-27T10:00:00"
     assert p["expires"] == (NOW + timedelta(days=30)).isoformat()
     assert event(cli_env, b, "dev")["text"] == b["text"] and event(cli_env, b) is None
@@ -88,34 +90,70 @@ def test_last_copy_of_a_turn_wins(cli_env, embedder):
 
     r = flush_spool(cli_env, emb, now=NOW)
 
-    assert r.new == 2 and len(emb.embedded) == 2
-    assert event(cli_env, rec(1))["text"].endswith("complete")
+    assert r.written == 2 and len(emb.embedded) == 2
+    assert event(cli_env, rec(1, "User: q\n\nAssistant: complete")) is not None
+    assert event(cli_env, rec(1, "User: q\n\nAssistant: partial")) is None
 
 
 def test_unchanged_turn_is_skipped_and_keeps_its_extracted_state(cli_env, embedder):
     spool(rec(1))
     flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
-    mark_event_extracted(cli_env, rec(1)["id"], domain="shared", resolved_into="project:x")
+    mark_event_extracted(cli_env, version_id(rec(1)["id"], rec(1)["text"]), domain="shared",
+                         resolved_into="project:x")
     spool(rec(1))  # the hook re-spools the last turn every run
 
     r = flush_spool(cli_env, no_embedder, now=NOW)
 
-    assert (r.new, r.updated, r.unchanged) == (0, 0, 1)
+    assert (r.written, r.unchanged) == (0, 1)
     p = event(cli_env, rec(1))
     assert p["extracted"] is True and p["resolved_into"] == "project:x"
 
 
-def test_changed_turn_is_rewritten_as_unextracted(cli_env, embedder):
-    spool(rec(1, "User: q\n\nAssistant: partial"))
+V1 = "User: q\n\nAssistant: partial"
+V2 = "User: q\n\nAssistant: partial, then the rest"
+
+
+def test_changed_turn_after_consolidation_is_a_new_event(cli_env, embedder):
+    spool(rec(1, V1))
     flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
-    mark_event_extracted(cli_env, rec(1)["id"], domain="shared")
-    spool(rec(1, "User: q\n\nAssistant: partial, then the rest"))
+    mark_event_extracted(cli_env, version_id(rec(1)["id"], V1), domain="shared",
+                         resolved_into="project:x")
+    spool(rec(1, V2))
 
     r = flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
 
-    assert (r.new, r.updated) == (0, 1)
-    p = event(cli_env, rec(1))
-    assert p["text"].endswith("the rest") and p["extracted"] is False
+    assert (r.written, r.superseded) == (1, 0)
+    assert event(cli_env, rec(1, V2))["extracted"] is False
+    old = event(cli_env, rec(1, V1))
+    assert old["extracted"] is True and old["resolved_into"] == "project:x"
+
+
+def test_changed_turn_retires_the_unconsolidated_older_version(cli_env, embedder):
+    spool(rec(1, V1), rec(2))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    spool(rec(1, V2))
+
+    r = flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+
+    assert (r.written, r.superseded) == (1, 1)
+    old = event(cli_env, rec(1, V1))
+    assert old["extracted"] is True and old["superseded_by"] == version_id(rec(1)["id"], V2)
+    assert event(cli_env, rec(2))["extracted"] is False  # another turn is untouched
+    queued = {e["id"] for e in get_unextracted_events(cli_env)}
+    assert queued == {version_id(rec(1)["id"], V2), version_id(rec(2)["id"], rec(2)["text"])}
+
+
+def test_resolving_a_version_read_before_an_update_leaves_the_update_queued(cli_env, embedder):
+    spool(rec(1, V1))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
+    (read,) = get_unextracted_events(cli_env)  # a consolidator reads V1...
+    spool(rec(1, V2))
+    flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)  # ...V2 lands...
+
+    mark_event_extracted(cli_env, read["id"], domain="shared")  # ...then V1 is resolved
+
+    (left,) = get_unextracted_events(cli_env)
+    assert left["text"] == V2
 
 
 def test_empty_or_missing_spool_never_loads_the_model(cli_env):
@@ -132,7 +170,7 @@ def test_malformed_records_are_skipped_and_counted(cli_env, embedder):
 
     r = flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
 
-    assert r.new == 1 and r.malformed == 6
+    assert r.written == 1 and r.malformed == 6
     assert event(cli_env, rec(1)) is not None
 
 
@@ -149,8 +187,9 @@ def test_failed_flush_leaves_the_moved_spool_and_the_next_one_finishes_it(cli_en
 
     r = flush_spool(cli_env, CountingEmbedder(embedder), now=NOW)
 
-    assert (r.new, r.updated) == (3, 1)  # rec(2): the old copy, then the newer one
-    assert event(cli_env, rec(2))["text"].endswith("newer")
+    # rec(2): the moved spool's copy, then the newer one, which retires it.
+    assert (r.written, r.superseded) == (4, 1)
+    assert event(cli_env, rec(2, "User: q2\n\nAssistant: newer"))["extracted"] is False
     assert not capture.flushing_path().exists() and not capture.spool_path().exists()
 
 
@@ -168,7 +207,7 @@ def test_hook_appends_during_a_flush_land_in_a_fresh_spool(cli_env, embedder, tm
 
     r = flush_spool(cli_env, emb, now=NOW)
 
-    assert r.new == 1
+    assert r.written == 1
     (late,) = [json.loads(line) for line in capture.spool_path().read_text().splitlines()]
     assert late["text"] == "User: Late."
 
@@ -207,14 +246,14 @@ def test_unparseable_timestamp_falls_back_to_now(cli_env, embedder):
 
 def test_captured_events_work_with_the_since_filter(cli_env, embedder):
     now = datetime.now(timezone.utc)
-    spool(rec(1, timestamp=(now - timedelta(minutes=5)).isoformat()),
-          rec(2, timestamp="2026-01-01T00:00:00Z"))
+    fresh = rec(1, timestamp=(now - timedelta(minutes=5)).isoformat())
+    spool(fresh, rec(2, timestamp="2026-01-01T00:00:00Z"))
     flush_spool(cli_env, CountingEmbedder(embedder))
 
     since = (now - timedelta(hours=1)).replace(tzinfo=None)  # how callers pass it
     recent = get_unextracted_events(cli_env, since=since)
 
-    assert [e["id"] for e in recent] == [rec(1)["id"]]
+    assert [e["id"] for e in recent] == [version_id(fresh["id"], fresh["text"])]
 
 
 def test_cli_flush_and_stats(cli_env):
@@ -227,7 +266,7 @@ def test_cli_flush_and_stats(cli_env):
 
     out = runner.invoke(cli_mod.main, ["capture", "flush"])
     assert out.exit_code == 0, out.output
-    assert "Flushed 3 turns (3 new, 0 updated; dev 2, shared 1)." in out.output
+    assert "Flushed 3 turns (dev 2, shared 1)." in out.output
 
     out = runner.invoke(cli_mod.main, ["stats"])
     assert "captures: 3 unconsolidated (shared 1, dev 2); 0 spooled, not yet flushed" in out.output
@@ -235,6 +274,13 @@ def test_cli_flush_and_stats(cli_env):
     spool(rec(1))
     out = runner.invoke(cli_mod.main, ["capture", "flush"])
     assert "Nothing new to flush." in out.output and "Skipped 1 turns already stored" in out.output
+
+    spool(rec(1, "User: q\n\nAssistant: more"))
+    out = runner.invoke(cli_mod.main, ["capture", "flush"])
+    assert "Flushed 1 turns (shared 1)." in out.output
+    assert "Retired 1 older unconsolidated versions" in out.output
+    out = runner.invoke(cli_mod.main, ["stats"])
+    assert "captures: 3 unconsolidated (shared 1, dev 2)" in out.output
 
 
 def test_cli_flush_reports_a_busy_lock(cli_env):

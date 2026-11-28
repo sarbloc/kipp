@@ -349,9 +349,11 @@ def capture_flush():
         raise click.ClickException(f"capture flush failed: {exc}") from exc
     if r.written:
         by_domain = ", ".join(f"{d} {n}" for d, n in sorted(r.domains.items()))
-        click.echo(f"Flushed {r.written} turns ({r.new} new, {r.updated} updated; {by_domain}).")
+        click.echo(f"Flushed {r.written} turns ({by_domain}).")
     else:
         click.echo("Nothing new to flush.")
+    if r.superseded:
+        click.echo(f"Retired {r.superseded} older unconsolidated versions of updated turns.")
     if r.unchanged:
         click.echo(f"Skipped {r.unchanged} turns already stored unchanged.")
     if r.malformed:
